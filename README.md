@@ -6,7 +6,7 @@ Reproducible offline benchmarking for H.264, H.265, and sparse-patch BiSTAR reco
 
 ```bash
 ./scripts/bootstrap.sh
-conda activate /home/xiaohan/BiSTAR-Benchmark/.conda/bistar-full
+conda activate /home/xiaohan/anaconda3/envs/bistar
 python scripts/check_environment.py
 python scripts/run_smoke_test.py --config configs/experiments/smoke_test.yaml
 ```
@@ -15,7 +15,7 @@ The smoke test creates a deterministic synthetic clip and evaluates all three me
 
 The checked configuration uses the official VideoMAE ViT-B SSV2 pretraining checkpoint for 16 frames and tubelet size 2. Its expected SHA-256 is stored in `configs/models/videomae.yaml`. Hidden pixels are zeroed before inference, and predicted patches are denormalized only with statistics available from transmitted pixels.
 
-The validated local environment is `.conda/bistar-full` (Python 3.10.15, PyTorch 2.4.0, torchvision 0.19.0). The current host has no visible NVIDIA device, so model acceptance runs on CPU; setting the model runtime device to `cuda:0` makes the environment check require CUDA.
+The validated Conda environment is `/home/xiaohan/anaconda3/envs/bistar` (Python 3.10.15, PyTorch 2.4.0, torchvision 0.19.0). The current host has no visible NVIDIA device, so model acceptance runs on CPU; setting the model runtime device to `cuda:0` makes the environment check require CUDA.
 
 ## Commands
 

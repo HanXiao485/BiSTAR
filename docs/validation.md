@@ -1,6 +1,6 @@
 # Validation record
 
-Validated on 2026-10-12 with the project-local Conda prefix `.conda/bistar-full`.
+Validated on 2026-10-12 with the Conda prefix `/home/xiaohan/anaconda3/envs/bistar`.
 
 - Python 3.10.15
 - PyTorch 2.4.0+cu121; torchvision 0.19.0+cu121; CUDA unavailable on this host, CPU inference used
@@ -12,15 +12,15 @@ Validated on 2026-10-12 with the project-local Conda prefix `.conda/bistar-full`
 Acceptance commands:
 
 ```bash
-PYTHONNOUSERSITE=1 .conda/bistar-full/bin/python scripts/check_environment.py
-PYTHONNOUSERSITE=1 .conda/bistar-full/bin/python -m pytest tests/unit
-PYTHONNOUSERSITE=1 .conda/bistar-full/bin/python -m pytest tests/integration
-PYTHONNOUSERSITE=1 .conda/bistar-full/bin/python -m pytest tests/regression
-PYTHONNOUSERSITE=1 .conda/bistar-full/bin/python scripts/run_smoke_test.py --config configs/experiments/smoke_test.yaml
-PYTHONNOUSERSITE=1 .conda/bistar-full/bin/python scripts/run_rd.py --config configs/experiments/rd_sweep.yaml
-PYTHONNOUSERSITE=1 .conda/bistar-full/bin/python scripts/run_matched_bitrate.py --config configs/experiments/matched_bitrate.yaml
-PYTHONNOUSERSITE=1 .conda/bistar-full/bin/python scripts/run_ablation.py --config configs/experiments/ablation.yaml
-PYTHONNOUSERSITE=1 .conda/bistar-full/bin/python scripts/run_realtime.py --config configs/experiments/realtime.yaml
+PYTHONNOUSERSITE=1 /home/xiaohan/anaconda3/envs/bistar/bin/python scripts/check_environment.py
+PYTHONNOUSERSITE=1 /home/xiaohan/anaconda3/envs/bistar/bin/python -m pytest tests/unit
+PYTHONNOUSERSITE=1 /home/xiaohan/anaconda3/envs/bistar/bin/python -m pytest tests/integration
+PYTHONNOUSERSITE=1 /home/xiaohan/anaconda3/envs/bistar/bin/python -m pytest tests/regression
+PYTHONNOUSERSITE=1 /home/xiaohan/anaconda3/envs/bistar/bin/python scripts/run_smoke_test.py --config configs/experiments/smoke_test.yaml
+PYTHONNOUSERSITE=1 /home/xiaohan/anaconda3/envs/bistar/bin/python scripts/run_rd.py --config configs/experiments/rd_sweep.yaml
+PYTHONNOUSERSITE=1 /home/xiaohan/anaconda3/envs/bistar/bin/python scripts/run_matched_bitrate.py --config configs/experiments/matched_bitrate.yaml
+PYTHONNOUSERSITE=1 /home/xiaohan/anaconda3/envs/bistar/bin/python scripts/run_ablation.py --config configs/experiments/ablation.yaml
+PYTHONNOUSERSITE=1 /home/xiaohan/anaconda3/envs/bistar/bin/python scripts/run_realtime.py --config configs/experiments/realtime.yaml
 ```
 
 The synthetic acceptance dataset is deterministic, 224×224, 15 FPS. Formal experiments should replace its manifest rows with the paper dataset while keeping the same preprocessing and runner paths.
