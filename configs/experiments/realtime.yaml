@@ -1,0 +1,2 @@
+experiment: {name: realtime, seed: 0, output_dir: outputs/realtime, evaluation_mode: causal}
+network: {enabled: false, interface: lo, bandwidth_kbps: 200, delay_ms: 100, jitter_ms: 20, loss_percent: 1.0}

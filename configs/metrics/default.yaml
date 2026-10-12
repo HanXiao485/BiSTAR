@@ -1,0 +1,7 @@
+metrics:
+  image: [psnr, ssim, ms_ssim, lpips]
+  temporal: [residual_difference]
+  communication: [mean_bitrate, peak_1s_bitrate, p95_1s_bitrate]
+  runtime: [mean_latency, p50_latency, p95_latency, p99_latency, fps]
+  lpips_backend: standard
+  lpips_network: squeeze

@@ -1,0 +1,7 @@
+experiment: {name: smoke_test, seed: 0, output_dir: outputs/smoke_test}
+dataset: {config: configs/datasets/bistar_eval.yaml, split: test}
+rd: {target_bitrates_kbps: [100], bitrate_match_tolerance_percent: 5.0}
+methods:
+  h264: {enabled: true, config: configs/codecs/h264.yaml}
+  h265: {enabled: true, config: configs/codecs/h265.yaml}
+smoke: {num_frames: 30, generate_synthetic: true, run_bistar: true}

@@ -1,0 +1,9 @@
+model:
+  name: videomae
+  source: third_party/VideoMAE
+  architecture: {model_name: pretrain_videomae_base_patch16_224, image_size: 224, patch_size: 16, tubelet_size: 2}
+  temporal: {num_frames: 16, sampling_rate: 1}
+  checkpoint: {path: checkpoints/videomae_base.pth, sha256: decba3e0264ae77030eadf097403e13051da35e19297d59bb0abf721cf4fa0c2}
+  precision: {dtype: fp16, amp: true}
+  reconstruction: {mode: masked_reconstruction, output_frame_policy: center}
+  runtime: {device: cpu, decoder_depth: 4}

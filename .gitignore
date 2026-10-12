@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+.conda/
+outputs/*
+!outputs/.gitkeep
+datasets/raw/*
+!datasets/raw/.gitkeep
+checkpoints/*
+!checkpoints/.gitkeep
+third_party/VideoMAE/*
+!third_party/VideoMAE/.gitkeep
+checkpoints/torch/

@@ -1,0 +1,16 @@
+codec:
+  name: h264
+  implementation: ffmpeg_libx264
+  pixel_format: yuv420p
+  encoder:
+    codec_name: libx264
+    preset: medium
+    mode: bitrate
+    bitrate_kbps: 100
+    maxrate_kbps: null
+    bufsize_kbps: null
+    crf: null
+    gop_size: 30
+    b_frames: 0
+    tune: null
+  output: {container: h264, extension: h264}

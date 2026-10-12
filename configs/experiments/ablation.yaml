@@ -1,0 +1,10 @@
+experiment: {name: ablation, seed: 0, output_dir: outputs/ablation}
+dataset: {config: configs/datasets/bistar_eval.yaml, split: test}
+ablation:
+  budget_mode: visible_patch_count
+  visible_patch_counts: [20, 40, 60]
+  variants: [random, gaze_only, temporal_only, edge_only, structural_only, gaze_temporal, gaze_edge, bistar_full]
+bistar:
+  patch_size: 16
+  payload_encoding: {mode: png, quality: 90}
+  reconstruction: previous_frame

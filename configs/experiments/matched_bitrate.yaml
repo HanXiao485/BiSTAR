@@ -1,0 +1,4 @@
+experiment: {name: matched_bitrate, seed: 0, output_dir: outputs/matched_bitrate}
+dataset: {config: configs/datasets/bistar_eval.yaml, split: test}
+matched_bitrate: {target_kbps: [100], tolerance_percent: 5.0, max_iterations: 8}
+methods: [h264, h265, bistar_videomae]
