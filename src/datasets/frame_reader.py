@@ -19,6 +19,57 @@ def read_rgb_frames(path: Path) -> List[np.ndarray]:
     return frames
 
 
+def write_rgb_video(frames: List[np.ndarray], output_path: Path, fps: float, crf: int = 18) -> dict:
+    """Encode RGB uint8 frames as an H.264 MP4 intended for visual inspection."""
+    if len(frames) == 0:
+        raise ValueError("Cannot write an empty video")
+    if fps <= 0:
+        raise ValueError("fps must be positive")
+    first = np.asarray(frames[0])
+    if first.ndim != 3 or first.shape[2] != 3:
+        raise ValueError("Frames must have HxWx3 RGB shape")
+    height, width = first.shape[:2]
+    if width % 2 or height % 2:
+        raise ValueError("H.264 yuv420p output requires even frame dimensions")
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    command = [
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", "{}x{}".format(width, height),
+        "-r", str(fps), "-i", "pipe:0", "-an", "-c:v", "libx264",
+        "-preset", "medium", "-crf", str(crf), "-pix_fmt", "yuv420p",
+        "-movflags", "+faststart", str(output_path),
+    ]
+    process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    try:
+        for frame in frames:
+            array = np.asarray(frame)
+            if array.shape != first.shape:
+                raise ValueError("All frames must have the same shape")
+            process.stdin.write(np.ascontiguousarray(array, dtype=np.uint8).tobytes())
+        process.stdin.close()
+        error = process.stderr.read().decode("utf-8", errors="replace")
+        return_code = process.wait()
+    except Exception:
+        if process.stdin and not process.stdin.closed:
+            process.stdin.close()
+        process.kill()
+        process.wait()
+        raise
+    if return_code != 0:
+        raise RuntimeError("FFmpeg video encoding failed: {}".format(error))
+    if not output_path.is_file() or output_path.stat().st_size == 0:
+        raise RuntimeError("FFmpeg produced no output video: {}".format(output_path))
+    return {
+        "path": str(output_path),
+        "num_frames": len(frames),
+        "fps": float(fps),
+        "width": width,
+        "height": height,
+        "bytes": output_path.stat().st_size,
+    }
+
+
 def preprocess_video(input_path: Path, output_path: Path, preprocessing: dict) -> dict:
     """Materialize the common source once so every method receives identical frames."""
     output_path.parent.mkdir(parents=True, exist_ok=True)

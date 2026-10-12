@@ -12,3 +12,7 @@ checkpoints/*
 third_party/VideoMAE/*
 !third_party/VideoMAE/.gitkeep
 checkpoints/torch/
+
+# Ignore files and directories whose names contain "test","smoke"
+*test*
+*smoke*

@@ -1,8 +1,20 @@
-experiment: {name: rd_sweep, seed: 0, output_dir: outputs/rd_sweep}
-dataset: {config: configs/datasets/bistar_eval.yaml, split: test}
-rd: {target_bitrates_kbps: [50, 75, 100, 150, 200, 300], bitrate_match_tolerance_percent: 5.0, max_match_iterations: 8}
+experiment:
+  name: rd_sweep
+  seed: 0
+  output_dir: outputs/rd_sweep
+  save_videomae_videos: true
+dataset:
+  config: configs/datasets/bistar_eval.yaml
+  split: test
+rd:
+  target_bitrates_kbps: [50, 75, 100, 150, 200, 300]
+  bitrate_match_tolerance_percent: 5.0
+  max_match_iterations: 8
 methods:
   h264: {enabled: true, config: configs/codecs/h264.yaml}
   h265: {enabled: true, config: configs/codecs/h265.yaml}
   bistar: {enabled: true, config: configs/codecs/bistar.yaml}
+bistar:
+  patch_budget_mode: false
+  visible_patch_count: 40
 quality_metrics: [psnr, ssim, ms_ssim, lpips]

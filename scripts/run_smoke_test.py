@@ -11,7 +11,7 @@ from src.common.config import dump_yaml, load_yaml
 from src.experiments.ablation_runner import run_ablation
 from src.experiments.bistar_runner import encode_sparse_clip, evaluate_videomae_clip
 from src.experiments.rd_runner import run_rd
-from src.datasets.frame_reader import read_rgb_frames
+from src.datasets.frame_reader import read_rgb_frames, write_rgb_video
 import json
 import numpy as np
 
@@ -34,18 +34,24 @@ def main(config_path):
     rd_summary = run_rd(config_path); result = {"rd": rd_summary}
     if config["smoke"].get("run_bistar", True):
         ablation = load_yaml(ROOT / "configs/experiments/ablation.yaml"); ablation["experiment"]["output_dir"] = "outputs/smoke_test/bistar"
+        ablation["experiment"]["save_videomae_videos"] = bool(config["experiment"].get("save_videomae_videos", False))
         ablation["ablation"]["visible_patch_counts"] = [40]; ablation["ablation"]["variants"] = ["bistar_full"]
         generated = ROOT / "outputs/smoke_test/smoke_ablation_resolved.yaml"; dump_yaml(ablation, generated)
         result["bistar"] = {"points": len(run_ablation(generated))}
         frames = read_rgb_frames(ROOT / "datasets/raw/synthetic.mkv")[:16]
         encoded = encode_sparse_clip(frames, budget=40, fps=15)
         evaluated = evaluate_videomae_clip(frames, encoded)
+        video = None
+        if config["experiment"].get("save_videomae_videos", False):
+            video = write_rgb_video(evaluated["reconstructed"], ROOT / "outputs/smoke_test/bistar_videomae/reconstructed.mp4", 15)
         vm_summary = {"frames": len(frames), "total_bytes": evaluated["total_bytes"],
                       "payload_bytes": evaluated["payload_bytes"], "metadata_bytes": evaluated["metadata_bytes"],
                       "ssim": float(np.mean([x["ssim"] for x in evaluated["frame_metrics"]])),
                       "lpips": float(np.mean([x["lpips"] for x in evaluated["frame_metrics"]])),
                       "inference_ms_per_frame": evaluated["inference_ms_per_frame"],
-                      "gpu_peak_memory_bytes": evaluated["gpu_peak_memory_bytes"]}
+                      "gpu_peak_memory_bytes": evaluated["gpu_peak_memory_bytes"],
+                      "reconstruction_video": video["path"] if video else None,
+                      "reconstruction_video_bytes": video["bytes"] if video else None}
         vm_dir = ROOT / "outputs/smoke_test/bistar_videomae"; vm_dir.mkdir(parents=True, exist_ok=True)
         (vm_dir / "summary.json").write_text(json.dumps(vm_summary, indent=2), encoding="utf-8")
         result["bistar_videomae"] = vm_summary

@@ -1,4 +1,8 @@
-experiment: {name: smoke_test, seed: 0, output_dir: outputs/smoke_test}
+experiment:
+  name: smoke_test
+  seed: 0
+  output_dir: outputs/smoke_test
+  save_videomae_videos: true
 dataset: {config: configs/datasets/bistar_eval.yaml, split: test}
 rd: {target_bitrates_kbps: [100], bitrate_match_tolerance_percent: 5.0}
 methods:

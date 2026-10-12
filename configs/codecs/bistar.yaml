@@ -2,6 +2,6 @@ codec:
   name: bistar
   implementation: sparse_patch_transport
   patch_size: 16
-  selector: {type: bistar_full, num_visible_patches: 40, seed: 0}
+  selector: {type: bistar_full, num_visible_patches: 150, seed: 0}
   payload_encoding: {mode: png, quality: 90}
   reconstruction: {type: previous_frame}

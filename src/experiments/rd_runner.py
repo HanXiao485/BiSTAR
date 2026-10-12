@@ -5,10 +5,10 @@ import numpy as np
 
 from src.codecs import H264Adapter, H265Adapter
 from src.common.config import load_codec_config, load_yaml, resolve_path, validate_experiment_config
-from src.datasets.frame_reader import preprocess_video, read_rgb_frames
+from src.datasets.frame_reader import preprocess_video, read_rgb_frames, write_rgb_video
 from src.datasets.manifest import read_manifest
 from src.metrics.image_quality import create_lpips_model, frame_metrics
-from src.experiments.bistar_runner import evaluate_videomae_clip, select_budget_for_rate
+from src.experiments.bistar_runner import evaluate_videomae_clip, resolve_patch_budget_options, select_budget_for_rate
 from src.bistar.reconstruction.videomae_adapter import VideoMAEAdapter
 from .runner import PROJECT_ROOT, prepare_run, write_csv, write_summary
 
@@ -22,6 +22,8 @@ def _aggregate(rows, keys):
 
 def run_rd(config_path):
     config = validate_experiment_config(load_yaml(config_path), "rd"); output = prepare_run(config, resolve_path(config["experiment"]["output_dir"], PROJECT_ROOT))
+    save_videomae_videos = bool(config["experiment"].get("save_videomae_videos", False))
+    patch_budget_mode, fixed_patch_count = resolve_patch_budget_options(config)
     dataset_cfg = load_yaml(resolve_path(config["dataset"]["config"], PROJECT_ROOT))["dataset"]
     rows = read_manifest(resolve_path(dataset_cfg["manifest"], PROJECT_ROOT), config["dataset"].get("split", "test"))
     if not rows: raise ValueError("Dataset manifest contains no selected sequences")
@@ -48,6 +50,12 @@ def run_rd(config_path):
                 recon = read_rgb_frames(Path(decoded["decoded_path"]))
                 if len(recon) != encoded["num_frames"]: raise RuntimeError("Decoded frame alignment failure")
                 if len(originals) != len(recon): raise RuntimeError("Source/decoded frame count differs")
+                comparison_video = write_rgb_video(
+                    recon,
+                    output / "reconstructions" / row["sequence_id"] /
+                    "{}_{}kbps.mp4".format(method, target),
+                    float(dataset_cfg["preprocessing"]["target_fps"]),
+                )
                 current = []
                 for frame_id, (reference, reconstructed) in enumerate(zip(originals, recon)):
                     metrics = frame_metrics(reference, reconstructed, lpips_model); item = {"sequence_id": row["sequence_id"], "method": method, "target_kbps": target, "frame_id": frame_id, **metrics}
@@ -57,18 +65,28 @@ def run_rd(config_path):
                                       "actual_bitrate_kbps": encoded["actual_bitrate_kbps"], "total_bytes": encoded["total_bytes"],
                                       "num_frames": len(recon), "encode_time_sec": encoded["encode_time_sec"], "decode_time_sec": decoded["decode_time_sec"], **aggregate})
                 sequence_rows[-1].update({"requested_kbps": requested, "match_iterations": iteration,
+                                          "reconstruction_video": comparison_video["path"],
+                                          "reconstruction_video_bytes": comparison_video["bytes"],
                                           "status": "matched" if abs(encoded["actual_bitrate_kbps"]-target)/target*100 <= tolerance else "bitrate_unreachable"})
         bistar_cfg = config["methods"].get("bistar", {})
         if bistar_cfg.get("enabled", False):
             model_adapter = VideoMAEAdapter(load_yaml(PROJECT_ROOT / "configs/models/videomae.yaml")); model_adapter.load_model()
             fps = float(dataset_cfg["preprocessing"]["target_fps"]); clip_size = 16
             for target in rates:
-                current, total_bytes, payload_bytes, metadata_bytes, inference = [], 0, 0, 0, 0.0
+                current, reconstructed_frames = [], []
+                budgets = []
+                total_bytes, payload_bytes, metadata_bytes, inference = 0, 0, 0, 0.0
                 for start in range(0, len(originals), clip_size):
                     valid = originals[start:start+clip_size]; valid_count = len(valid)
                     clip = valid + [valid[-1]] * (clip_size - valid_count)
-                    matched = select_budget_for_rate(clip, target, fps)
+                    matched = select_budget_for_rate(
+                        clip, target, fps,
+                        fixed_visible_patch_count=fixed_patch_count,
+                        tolerance_percent=config["rd"]["bitrate_match_tolerance_percent"],
+                    )
+                    budgets.append(matched["budget"])
                     evaluated = evaluate_videomae_clip(clip, matched["encoded"], adapter=model_adapter, lpips_model=lpips_model)
+                    reconstructed_frames.extend(evaluated["reconstructed"][:valid_count])
                     inference += evaluated["inference_time_sec"] * valid_count / clip_size
                     total_bytes += int(evaluated["total_bytes"] * valid_count / clip_size)
                     payload_bytes += int(evaluated["payload_bytes"] * valid_count / clip_size)
@@ -79,11 +97,25 @@ def run_rd(config_path):
                                 "frame_id": start + offset, **metrics}
                         frame_rows.append(item); current.append(item)
                 duration = len(originals) / fps; actual = total_bytes * 8 / duration / 1000
+                video = None
+                if save_videomae_videos:
+                    video = write_rgb_video(
+                        reconstructed_frames,
+                        output / "reconstructions" / row["sequence_id"] / "bistar_{}kbps.mp4".format(target),
+                        fps,
+                    )
                 aggregate = _aggregate(current, ["psnr", "ssim", "ms_ssim", "lpips"])
                 sequence_rows.append({"sequence_id": row["sequence_id"], "method": "bistar", "target_kbps": target,
                                       "actual_bitrate_kbps": actual, "total_bytes": total_bytes, "payload_bytes": payload_bytes,
                                       "metadata_bytes": metadata_bytes, "num_frames": len(originals), "encode_time_sec": 0.0,
-                                      "decode_time_sec": inference, "status": "matched" if abs(actual-target)/target <= config["rd"]["bitrate_match_tolerance_percent"]/100 else "bitrate_unreachable", **aggregate})
+                                      "decode_time_sec": inference,
+                                      "patch_budget_mode": patch_budget_mode,
+                                      "patch_budget_strategy": "fixed" if patch_budget_mode else "bitrate_match",
+                                      "visible_patch_count": float(sum(budgets)) / len(budgets),
+                                      "visible_patch_counts": ",".join(str(value) for value in budgets),
+                                      "reconstruction_video": video["path"] if video else None,
+                                      "reconstruction_video_bytes": video["bytes"] if video else None,
+                                      "status": "matched" if abs(actual-target)/target <= config["rd"]["bitrate_match_tolerance_percent"]/100 else "bitrate_unreachable", **aggregate})
     write_csv(frame_rows, output / "frame_results.csv"); write_csv(sequence_rows, output / "sequence_results.csv")
     write_csv(sequence_rows, output / "metrics.csv"); write_csv(sequence_rows, output / "rd_points.csv")
     from src.reports.plots import plot_rd
