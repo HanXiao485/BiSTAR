@@ -39,6 +39,23 @@ def load_codec_config(path: Path) -> Dict[str, Any]:
     return data
 
 
+def load_bistar_config(path: Path) -> Dict[str, Any]:
+    data = load_yaml(path)
+    require(data, "codec")
+    codec = data["codec"]
+    require(codec, "name", "implementation", "patch_size", "selector", "payload_encoding", "reconstruction")
+    require(codec["payload_encoding"], "mode", "quality")
+    if codec["payload_encoding"]["mode"] not in ("png", "jpeg"):
+        raise ConfigError("BiSTAR payload_encoding.mode must be png or jpeg")
+    quality = int(codec["payload_encoding"]["quality"])
+    if quality < 0 or quality > 100:
+        raise ConfigError("BiSTAR payload_encoding.quality must be between 0 and 100")
+    require(codec["reconstruction"], "type")
+    if codec["reconstruction"]["type"] not in ("previous_frame", "interpolation"):
+        raise ConfigError("BiSTAR reconstruction.type must be previous_frame or interpolation")
+    return data
+
+
 def resolve_path(value: str, project_root: Path) -> Path:
     path = Path(value)
     return path if path.is_absolute() else project_root / path

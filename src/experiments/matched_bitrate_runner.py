@@ -2,7 +2,7 @@ import copy
 from pathlib import Path
 
 from src.codecs import H264Adapter, H265Adapter
-from src.common.config import load_codec_config, load_yaml, resolve_path, validate_experiment_config
+from src.common.config import load_bistar_config, load_codec_config, load_yaml, resolve_path, validate_experiment_config
 from src.datasets.manifest import read_manifest
 from src.datasets.frame_reader import preprocess_video, read_rgb_frames, write_rgb_video
 from src.experiments.bistar_runner import evaluate_videomae_clip, resolve_patch_budget_options, select_budget_for_rate
@@ -14,6 +14,9 @@ def run_matched(config_path):
     config = validate_experiment_config(load_yaml(config_path), "matched_bitrate"); output = prepare_run(config, resolve_path(config["experiment"]["output_dir"], PROJECT_ROOT))
     save_videomae_videos = bool(config["experiment"].get("save_videomae_videos", False))
     patch_budget_mode, fixed_patch_count = resolve_patch_budget_options(config)
+    codec = load_bistar_config(resolve_path(config["bistar"]["config"], PROJECT_ROOT))["codec"]
+    patch_size = int(codec["patch_size"])
+    payload_encoding = codec["payload_encoding"]
     ds = load_yaml(resolve_path(config["dataset"]["config"], PROJECT_ROOT))["dataset"]
     sequences = read_manifest(resolve_path(ds["manifest"], PROJECT_ROOT), config["dataset"].get("split", "test"))
     options = config["matched_bitrate"]; results = []
@@ -63,6 +66,8 @@ def run_matched(config_path):
                     clip = valid + [valid[-1]] * (clip_size - valid_count)
                     matched = select_budget_for_rate(
                         clip, target, fps,
+                        patch_size=patch_size,
+                        payload_encoding=payload_encoding,
                         fixed_visible_patch_count=fixed_patch_count,
                         tolerance_percent=options["tolerance_percent"],
                     )
@@ -87,6 +92,8 @@ def run_matched(config_path):
                                 "status": "matched" if abs(actual-target)/target*100 <= options["tolerance_percent"] else "bitrate_unreachable",
                                 "patch_budget_mode": patch_budget_mode,
                                 "patch_budget_strategy": "fixed" if patch_budget_mode else "bitrate_match",
+                                "payload_encoding_mode": payload_encoding["mode"],
+                                "payload_encoding_quality": payload_encoding["quality"],
                                 "visible_patch_count": float(sum(budgets)) / len(budgets),
                                 "visible_patch_counts": ",".join(str(value) for value in budgets),
                                 "inference_ms_per_frame": inference_time * 1000.0 / len(frames),

@@ -12,5 +12,6 @@ matched_bitrate:
   max_iterations: 8
 methods: [h264, h265, bistar_videomae]
 bistar:
+  config: configs/codecs/bistar.yaml
   patch_budget_mode: false
   visible_patch_count: 40

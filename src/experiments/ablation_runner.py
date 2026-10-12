@@ -7,7 +7,7 @@ from src.bistar.reconstruction.previous_frame import PreviousFrameReconstructor
 from src.bistar.selector import EdgeSelector, FullSelector, GazeEdgeSelector, GazeSelector, GazeTemporalSelector, RandomSelector, StructuralSelector, TemporalSSIMSelector
 from src.bistar.transport.packetizer import Packetizer
 from src.bistar.transport.serializer import deserialize_packet
-from src.common.config import load_yaml, resolve_path, validate_experiment_config
+from src.common.config import load_bistar_config, load_yaml, resolve_path, validate_experiment_config
 from src.datasets.frame_reader import read_rgb_frames, write_rgb_video
 from src.datasets.manifest import read_manifest
 from src.experiments.bistar_runner import encode_sparse_clip, evaluate_videomae_clip
@@ -26,6 +26,10 @@ def run_ablation(config_path):
     cfg = validate_experiment_config(load_yaml(config_path), "ablation"); output = prepare_run(cfg, resolve_path(cfg["experiment"]["output_dir"], PROJECT_ROOT))
     ds = load_yaml(resolve_path(cfg["dataset"]["config"], PROJECT_ROOT))["dataset"]
     sequences = read_manifest(resolve_path(ds["manifest"], PROJECT_ROOT), cfg["dataset"].get("split", "test")); results = []; frame_results = []
+    codec = load_bistar_config(resolve_path(cfg["bistar"]["config"], PROJECT_ROOT))["codec"]
+    patch_size = int(codec["patch_size"])
+    payload_encoding = codec["payload_encoding"]
+    reconstruction_type = codec["reconstruction"]["type"]
     lpips_model = create_lpips_model("cpu")
     save_videomae = bool(cfg["experiment"].get("save_videomae_videos", False))
     model_adapter = None
@@ -36,8 +40,8 @@ def run_ablation(config_path):
         frames = read_rgb_frames(resolve_path(sequence["video_path"], PROJECT_ROOT))
         for variant in cfg["ablation"]["variants"]:
             for budget in cfg["ablation"]["visible_patch_counts"]:
-                selector = SELECTORS[variant](patch_size=cfg["bistar"]["patch_size"]); packetizer = Packetizer(**cfg["bistar"]["payload_encoding"], patch_size=cfg["bistar"]["patch_size"])
-                reconstructor = PreviousFrameReconstructor(cfg["bistar"]["patch_size"]) if cfg["bistar"]["reconstruction"] == "previous_frame" else InterpolationReconstructor(cfg["bistar"]["patch_size"])
+                selector = SELECTORS[variant](patch_size=patch_size); packetizer = Packetizer(**payload_encoding, patch_size=patch_size)
+                reconstructor = PreviousFrameReconstructor(patch_size) if reconstruction_type == "previous_frame" else InterpolationReconstructor(patch_size)
                 previous_source = previous_reconstructed = None; total_bytes = payload_bytes = metadata_bytes = 0; metrics = []; roi_values = []; latencies = []; temporal_values = []
                 for frame_id, frame in enumerate(frames):
                     selected = selector.select(frame, previous_source, (frame.shape[1]/2, frame.shape[0]/2, 1), budget)
@@ -58,7 +62,7 @@ def run_ablation(config_path):
                 videomae_video = None
                 if save_videomae:
                     reconstructed_frames = []
-                    video_selector = SELECTORS[variant](patch_size=cfg["bistar"]["patch_size"])
+                    video_selector = SELECTORS[variant](patch_size=patch_size)
                     clip_size = 16
                     for start in range(0, len(frames), clip_size):
                         valid = frames[start:start + clip_size]
@@ -69,8 +73,8 @@ def run_ablation(config_path):
                             budget,
                             sequence_number=seq_num,
                             fps=float(ds["preprocessing"]["target_fps"]),
-                            patch_size=cfg["bistar"]["patch_size"],
-                            payload_encoding=cfg["bistar"]["payload_encoding"],
+                            patch_size=patch_size,
+                            payload_encoding=payload_encoding,
                             selector=video_selector,
                         )
                         evaluated = evaluate_videomae_clip(
@@ -90,6 +94,8 @@ def run_ablation(config_path):
                                 "roi_ssim": float(np.mean([x["roi_ssim"] for x in roi_values])), "roi_lpips": float(np.mean([x["roi_lpips"] for x in roi_values])),
                                 "temporal_error": float(np.mean(temporal_values)) if temporal_values else 0.0,
                                 "reconstruction_ms": float(np.mean(latencies)), "fps": 1000.0 / float(np.mean(latencies)),
+                                "payload_encoding_mode": payload_encoding["mode"],
+                                "payload_encoding_quality": payload_encoding["quality"],
                                 "videomae_reconstruction_video": videomae_video["path"] if videomae_video else None,
                                 "videomae_reconstruction_video_bytes": videomae_video["bytes"] if videomae_video else None})
     write_csv(frame_results, output / "frame_results.csv"); write_csv(results, output / "sequence_results.csv")

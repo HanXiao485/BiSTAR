@@ -19,6 +19,4 @@ ablation:
     - gaze_edge
     - bistar_full
 bistar:
-  patch_size: 16
-  payload_encoding: {mode: png, quality: 90}
-  reconstruction: previous_frame
+  config: configs/codecs/bistar.yaml

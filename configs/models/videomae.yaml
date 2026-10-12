@@ -6,4 +6,4 @@ model:
   checkpoint: {path: checkpoints/videomae_base.pth, sha256: decba3e0264ae77030eadf097403e13051da35e19297d59bb0abf721cf4fa0c2}
   precision: {dtype: fp16, amp: true}
   reconstruction: {mode: masked_reconstruction, output_frame_policy: center}
-  runtime: {device: cpu, decoder_depth: 4}
+  runtime: {device: cuda:0, decoder_depth: 4}

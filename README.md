@@ -235,6 +235,7 @@ VideoMAE 可见 patch 使用布尔开关。按目标码率自动搜索：
 
 ```yaml
 bistar:
+  config: configs/codecs/bistar.yaml
   patch_budget_mode: false
   visible_patch_count: 40  # 此模式下忽略
 ```
@@ -243,6 +244,7 @@ bistar:
 
 ```yaml
 bistar:
+  config: configs/codecs/bistar.yaml
   patch_budget_mode: true
   visible_patch_count: 40
 ```
@@ -288,6 +290,7 @@ matched_bitrate:
   max_iterations: 8
 methods: [h264, h265, bistar_videomae]
 bistar:
+  config: configs/codecs/bistar.yaml
   patch_budget_mode: false
   visible_patch_count: 40
 ```
@@ -348,12 +351,21 @@ ablation:
     - gaze_edge
     - bistar_full
 bistar:
-  patch_size: 16
-  payload_encoding: {mode: png, quality: 90}
-  reconstruction: previous_frame
+  config: configs/codecs/bistar.yaml
 ```
 
-`reconstruction` 可设为 `previous_frame` 或 `interpolation`。结果记录总码率、payload/metadata 码率、SSIM、LPIPS、中心 ROI 指标、时序误差、重建延迟和 FPS：
+三个实验统一从 `configs/codecs/bistar.yaml` 读取 `patch_size`、
+`payload_encoding` 和 `reconstruction`。例如：
+
+```yaml
+codec:
+  patch_size: 16
+  payload_encoding: {mode: jpeg, quality: 50}
+  reconstruction: {type: previous_frame}
+```
+
+修改该文件后，RD、等码率和消融实验都会使用新的载荷编码。结果记录总码率、
+payload/metadata 码率、SSIM、LPIPS、中心 ROI 指标、时序误差、重建延迟和 FPS：
 
 ```text
 outputs/ablation/frame_results.csv

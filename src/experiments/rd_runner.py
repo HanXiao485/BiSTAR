@@ -4,7 +4,7 @@ from pathlib import Path
 import numpy as np
 
 from src.codecs import H264Adapter, H265Adapter
-from src.common.config import load_codec_config, load_yaml, resolve_path, validate_experiment_config
+from src.common.config import load_bistar_config, load_codec_config, load_yaml, resolve_path, validate_experiment_config
 from src.datasets.frame_reader import preprocess_video, read_rgb_frames, write_rgb_video
 from src.datasets.manifest import read_manifest
 from src.metrics.image_quality import create_lpips_model, frame_metrics
@@ -70,6 +70,9 @@ def run_rd(config_path):
                                           "status": "matched" if abs(encoded["actual_bitrate_kbps"]-target)/target*100 <= tolerance else "bitrate_unreachable"})
         bistar_cfg = config["methods"].get("bistar", {})
         if bistar_cfg.get("enabled", False):
+            codec = load_bistar_config(resolve_path(bistar_cfg["config"], PROJECT_ROOT))["codec"]
+            patch_size = int(codec["patch_size"])
+            payload_encoding = codec["payload_encoding"]
             model_adapter = VideoMAEAdapter(load_yaml(PROJECT_ROOT / "configs/models/videomae.yaml")); model_adapter.load_model()
             fps = float(dataset_cfg["preprocessing"]["target_fps"]); clip_size = 16
             for target in rates:
@@ -81,6 +84,8 @@ def run_rd(config_path):
                     clip = valid + [valid[-1]] * (clip_size - valid_count)
                     matched = select_budget_for_rate(
                         clip, target, fps,
+                        patch_size=patch_size,
+                        payload_encoding=payload_encoding,
                         fixed_visible_patch_count=fixed_patch_count,
                         tolerance_percent=config["rd"]["bitrate_match_tolerance_percent"],
                     )
@@ -111,6 +116,8 @@ def run_rd(config_path):
                                       "decode_time_sec": inference,
                                       "patch_budget_mode": patch_budget_mode,
                                       "patch_budget_strategy": "fixed" if patch_budget_mode else "bitrate_match",
+                                      "payload_encoding_mode": payload_encoding["mode"],
+                                      "payload_encoding_quality": payload_encoding["quality"],
                                       "visible_patch_count": float(sum(budgets)) / len(budgets),
                                       "visible_patch_counts": ",".join(str(value) for value in budgets),
                                       "reconstruction_video": video["path"] if video else None,
