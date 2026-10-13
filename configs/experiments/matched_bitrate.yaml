@@ -10,8 +10,10 @@ matched_bitrate:
   target_kbps: [100]
   tolerance_percent: 5.0
   max_iterations: 8
-methods: [h264, h265, bistar_videomae]
+methods: [h264, h265, bistar_videomae, bistar_atlas]
 bistar:
   config: configs/codecs/bistar.yaml
   patch_budget_mode: false
   visible_patch_count: 40
+bistar_atlas:
+  config: configs/codecs/bistar_atlas.yaml

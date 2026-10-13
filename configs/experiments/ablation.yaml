@@ -8,6 +8,7 @@ dataset:
   split: test
 ablation:
   budget_mode: visible_patch_count
+  transports: [jpeg_patch, h264_atlas]
   visible_patch_counts: [20, 40, 60]
   variants:
     - random
@@ -20,3 +21,5 @@ ablation:
     - bistar_full
 bistar:
   config: configs/codecs/bistar.yaml
+bistar_atlas:
+  config: configs/codecs/bistar_atlas.yaml

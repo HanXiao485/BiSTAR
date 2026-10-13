@@ -3,6 +3,7 @@
 BiSTAR Benchmark 是一个可复现的视频传输与重建评测框架，用于公平比较：
 
 - BiSTAR 稀疏图像块传输与 VideoMAE 重建；
+- BiSTAR GOP 稳定 patch 图集、H.264 传输与 VideoMAE 重建；
 - FFmpeg `libx264`（H.264）基线；
 - FFmpeg `libx265`（H.265）基线。
 
@@ -16,6 +17,7 @@ BiSTAR Benchmark 是一个可复现的视频传输与重建评测框架，用于
 | 码率匹配 | 迭代调整请求码率，默认误差容限 ±5% |
 | BiSTAR 选择器 | random、gaze、temporal SSIM、edge、structural 及组合策略 |
 | 稀疏传输 | patch 编码、序列化、反序列化、载荷与元数据分别计费 |
+| Patch 图集传输 | 每个 GOP 固定一次 mask，将可见 patch 排列成图集并用低延迟 H.264 编码 |
 | 重建 | previous-frame、interpolation、VideoMAE masked reconstruction |
 | 质量指标 | PSNR、SSIM、MS-SSIM、LPIPS、ROI 和时序残差指标 |
 | 性能指标 | 编解码时间、重建延迟、FPS、VideoMAE 推理时间 |
@@ -181,7 +183,7 @@ sequence_001,datasets/raw/sequence_001.mp4,30,1920,1080,300,test
 | `num_frames` | 视频帧数 |
 | `split` | `train`、`val` 或 `test` 等数据划分 |
 
-实验只处理 manifest 中与 `dataset.split` 相同的行。manifest 是实验输入的唯一事实来源，确保三个方法使用相同视频集合。
+实验只处理 manifest 中与 `dataset.split` 相同的行。manifest 是实验输入的唯一事实来源，确保所有方法使用相同视频集合。
 
 `configs/datasets/bistar_eval.yaml` 默认把输入统一到 224×224、15 FPS、RGB24。H.264、H.265 和 BiSTAR 使用同一预处理结果，以保证分辨率、帧率、帧区间和帧对齐一致。
 
@@ -225,6 +227,7 @@ methods:
   h264: {enabled: true, config: configs/codecs/h264.yaml}
   h265: {enabled: true, config: configs/codecs/h265.yaml}
   bistar: {enabled: true, config: configs/codecs/bistar.yaml}
+  bistar_atlas: {enabled: true, config: configs/codecs/bistar_atlas.yaml}
 bistar:
   patch_budget_mode: false
   visible_patch_count: 40
@@ -268,11 +271,25 @@ outputs/rd_sweep/
 ├── reconstructions/<sequence_id>/
 │   ├── h264_<target>kbps.mp4
 │   ├── h265_<target>kbps.mp4
-│   └── bistar_<target>kbps.mp4
+│   ├── bistar_<target>kbps.mp4
+│   └── bistar_atlas_<target>kbps.mp4
+├── gop_results.csv
+├── patch_results.csv
+├── plots/spatial/
+│   ├── <sequence>_<target>kbps_patch_psnr.png
+│   ├── <sequence>_<target>kbps_patch_ssim.png
+│   ├── <sequence>_<target>kbps_patch_normalized_l1.png
+│   └── <sequence>_<target>kbps_selection_frequency.png
 ├── tables/rate_distortion.csv
 ├── tables/runtime.csv
 └── summary.json
 ```
+
+空间图按 VideoMAE 的 16×16 patch 网格聚合整个视频。同一目标码率下所有方法并排显示，
+并共享色标：`patch_psnr` 和 `patch_ssim` 表示各空间位置的平均重建质量，
+`selection_frequency` 表示该位置在全部帧中作为真实可见 patch 传输的比例。H.264/H.265
+编码整帧，因此选择频率为 1；BiSTAR 和 atlas 显示实际选择频率。原始数值保存在
+`patch_results.csv`，字段包括 patch 行列、索引、PSNR、SSIM、归一化 L1 和选择频率。
 
 ## 等码率实验
 
@@ -288,11 +305,13 @@ matched_bitrate:
   target_kbps: [100]
   tolerance_percent: 5.0
   max_iterations: 8
-methods: [h264, h265, bistar_videomae]
+methods: [h264, h265, bistar_videomae, bistar_atlas]
 bistar:
   config: configs/codecs/bistar.yaml
   patch_budget_mode: false
   visible_patch_count: 40
+bistar_atlas:
+  config: configs/codecs/bistar_atlas.yaml
 ```
 
 等码率实验使用与 RD 相同的 `bistar.patch_budget_mode`。将其改为 `true`
@@ -311,18 +330,19 @@ bistar:
 - `visible_patch_count`：所有 clip 的平均可见 patch 数；
 - `visible_patch_counts`：每个 clip 实际使用的 patch 数列表。
 
-三个方法的完整重建视频保存到：
+四个方法的完整重建视频保存到：
 
 ```text
 outputs/matched_bitrate/reconstructions/<sequence_id>/h264_<target>kbps.mp4
 outputs/matched_bitrate/reconstructions/<sequence_id>/h265_<target>kbps.mp4
 outputs/matched_bitrate/reconstructions/<sequence_id>/bistar_videomae_<target>kbps.mp4
+outputs/matched_bitrate/reconstructions/<sequence_id>/bistar_atlas_<target>kbps.mp4
 ```
 
 CSV 中的 `reconstruction_video` 和 `reconstruction_video_bytes` 分别记录路径和文件大小。
 
 `bistar_videomae` 按 16 帧 clip 处理整个序列；不足 16 帧的尾段会在模型输入端补齐，
-写出视频时只保留有效帧。因此三个方法的比较视频具有相同帧数、分辨率和帧率。
+写出视频时只保留有效帧。因此四个方法的比较视频具有相同帧数、分辨率和帧率。
 
 ## BiSTAR 消融实验
 
@@ -330,7 +350,7 @@ CSV 中的 `reconstruction_video` 和 `reconstruction_video_bytes` 分别记录�
 python scripts/run_ablation.py --config configs/experiments/ablation.yaml
 ```
 
-默认比较 8 种选择器和 20、40、60 三档可见 patch 数，共 24 个组合：
+默认比较 8 种选择器、20/40/60 三档可见 patch 数和两种传输，共 48 个组合：
 
 ```yaml
 experiment:
@@ -340,6 +360,7 @@ experiment:
   save_videomae_videos: true
 ablation:
   budget_mode: visible_patch_count
+  transports: [jpeg_patch, h264_atlas]
   visible_patch_counts: [20, 40, 60]
   variants:
     - random
@@ -352,6 +373,8 @@ ablation:
     - bistar_full
 bistar:
   config: configs/codecs/bistar.yaml
+bistar_atlas:
+  config: configs/codecs/bistar_atlas.yaml
 ```
 
 三个实验统一从 `configs/codecs/bistar.yaml` 读取 `patch_size`、
@@ -373,6 +396,7 @@ outputs/ablation/sequence_results.csv
 outputs/ablation/tables/ablation.csv
 outputs/ablation/summary.json
 outputs/ablation/videomae_reconstructions/<sequence_id>/<selector>_<patch数量>patches.mp4
+outputs/ablation/atlas_reconstructions/<sequence_id>/<selector>_<patch数量>patches.mp4
 ```
 
 启用 `save_videomae_videos` 后，每个选择器和 patch 预算组合都会额外执行 VideoMAE
@@ -381,6 +405,50 @@ outputs/ablation/videomae_reconstructions/<sequence_id>/<selector>_<patch数量>
 记录视频路径和大小。
 
 ## 编码器参数
+
+GOP patch 图集参数位于 `configs/codecs/bistar_atlas.yaml`。选择器只读取当前 GOP
+首帧和上一 GOP 的末帧，因此 mask 的生成是因果的；同一 mask 只在 GOP 开头发送一次。
+可见 patch 按固定槽位排列为紧凑视频，随后由 `libx264` 跨帧压缩：
+
+```yaml
+codec:
+  patch_size: 16
+  gop_size: 16
+  selector:
+    type: bistar_full
+    patch_budget_mode: false
+    num_visible_patches: 150
+  control: {mask_encoding: bitmask, send_once_per_gop: true}
+  encoder:
+    codec_name: libx264
+    preset: ultrafast
+    tune: zerolatency
+    mode: bitrate
+    bitrate_kbps: 100
+    b_frames: 0
+```
+
+RD 和等码率实验会迭代调整图集编码器的请求码率，并以 `BATL` 头、bitmask 和实际
+H.264 bitstream 的总字节数判断是否进入容限。Atlas patch 预算由布尔配置控制：
+
+```yaml
+selector:
+  patch_budget_mode: false       # false：每个 GOP 自适应；true：固定
+  num_visible_patches: 150       # 固定值，或自适应模式在参考码率下的初值
+  min_visible_patches: 16
+  max_visible_patches: 196
+  candidate_visible_patches: [16, 25, 36, 49, 64, 81, 100, 121, 144, 169, 196]
+  adaptation_alpha: 0.5
+  max_patch_step: 36
+```
+
+自适应模式根据目标码率设置第一个 GOP 的预算，随后只使用上一 GOP 的实际总字节数
+调整下一个 GOP，因此保持因果性。mask 和 patch 数在单个 GOP 内仍然固定。结果文件的
+`patch_budget_strategy`、`visible_patch_count` 和 `visible_patch_counts` 分别记录策略、
+平均值和逐 GOP 数量。消融实验显式传入每档 patch 数，会保持固定预算以维持原有比较
+口径。图集方法按 16 帧完成一次 VideoMAE 推理，因此首帧最多等待
+`(gop_size-1)/fps`，结果中的 `mean_latency_ms`、`p95_latency_ms` 和
+`evaluation_mode=chunked_causal_selection` 会明确记录该延迟。
 
 H.264/H.265 配置位于 `configs/codecs/h264.yaml` 和 `h265.yaml`：
 
@@ -484,7 +552,7 @@ python -m pytest tests/integration
 python -m pytest tests/regression
 ```
 
-当前验收结果为 29 项测试全部通过。版本和验收记录见 `docs/validation.md`。
+当前测试覆盖传统编码器、稀疏包、patch 图集编解码、码率统计和实时会话。版本和验收记录见 `docs/validation.md`。
 
 ## 常见问题
 

@@ -8,7 +8,9 @@ from src.common.config import load_bistar_config, load_codec_config, load_yaml, 
 from src.datasets.frame_reader import preprocess_video, read_rgb_frames, write_rgb_video
 from src.datasets.manifest import read_manifest
 from src.metrics.image_quality import create_lpips_model, frame_metrics
+from src.metrics.spatial_quality import PatchQualityAccumulator
 from src.experiments.bistar_runner import evaluate_videomae_clip, resolve_patch_budget_options, select_budget_for_rate
+from src.experiments.atlas_runner import load_atlas_config, match_atlas_bitrate
 from src.bistar.reconstruction.videomae_adapter import VideoMAEAdapter
 from .runner import PROJECT_ROOT, prepare_run, write_csv, write_summary
 
@@ -27,7 +29,8 @@ def run_rd(config_path):
     dataset_cfg = load_yaml(resolve_path(config["dataset"]["config"], PROJECT_ROOT))["dataset"]
     rows = read_manifest(resolve_path(dataset_cfg["manifest"], PROJECT_ROOT), config["dataset"].get("split", "test"))
     if not rows: raise ValueError("Dataset manifest contains no selected sequences")
-    frame_rows, sequence_rows = [], []
+    frame_rows, sequence_rows, gop_rows, patch_rows = [], [], [], []
+    spatial_patch_size = int(load_yaml(PROJECT_ROOT / "configs/models/videomae.yaml")["model"]["architecture"]["patch_size"])
     lpips_model = create_lpips_model("cpu") if "lpips" in config.get("quality_metrics", ["lpips"]) else None
     rates = config["rd"]["target_bitrates_kbps"]
     for row in rows:
@@ -57,9 +60,17 @@ def run_rd(config_path):
                     float(dataset_cfg["preprocessing"]["target_fps"]),
                 )
                 current = []
+                spatial = PatchQualityAccumulator(
+                    originals[0].shape[0], originals[0].shape[1], spatial_patch_size
+                )
+                full_mask = np.ones((spatial.rows, spatial.columns), dtype=bool)
                 for frame_id, (reference, reconstructed) in enumerate(zip(originals, recon)):
                     metrics = frame_metrics(reference, reconstructed, lpips_model); item = {"sequence_id": row["sequence_id"], "method": method, "target_kbps": target, "frame_id": frame_id, **metrics}
                     frame_rows.append(item); current.append(item)
+                    spatial.update(reference, reconstructed, full_mask)
+                patch_rows.extend(spatial.rows_for({
+                    "sequence_id": row["sequence_id"], "method": method, "target_kbps": target,
+                }))
                 aggregate = _aggregate(current, ["psnr", "ssim", "ms_ssim", "lpips"])
                 sequence_rows.append({"sequence_id": row["sequence_id"], "method": method, "target_kbps": target,
                                       "actual_bitrate_kbps": encoded["actual_bitrate_kbps"], "total_bytes": encoded["total_bytes"],
@@ -77,6 +88,9 @@ def run_rd(config_path):
             fps = float(dataset_cfg["preprocessing"]["target_fps"]); clip_size = 16
             for target in rates:
                 current, reconstructed_frames = [], []
+                spatial = PatchQualityAccumulator(
+                    originals[0].shape[0], originals[0].shape[1], patch_size
+                )
                 budgets = []
                 total_bytes, payload_bytes, metadata_bytes, inference = 0, 0, 0, 0.0
                 for start in range(0, len(originals), clip_size):
@@ -101,6 +115,10 @@ def run_rd(config_path):
                         item = {"sequence_id": row["sequence_id"], "method": "bistar", "target_kbps": target,
                                 "frame_id": start + offset, **metrics}
                         frame_rows.append(item); current.append(item)
+                        spatial.update(
+                            valid[offset], evaluated["reconstructed"][offset],
+                            matched["encoded"]["visible_mask"],
+                        )
                 duration = len(originals) / fps; actual = total_bytes * 8 / duration / 1000
                 video = None
                 if save_videomae_videos:
@@ -110,6 +128,9 @@ def run_rd(config_path):
                         fps,
                     )
                 aggregate = _aggregate(current, ["psnr", "ssim", "ms_ssim", "lpips"])
+                patch_rows.extend(spatial.rows_for({
+                    "sequence_id": row["sequence_id"], "method": "bistar", "target_kbps": target,
+                }))
                 sequence_rows.append({"sequence_id": row["sequence_id"], "method": "bistar", "target_kbps": target,
                                       "actual_bitrate_kbps": actual, "total_bytes": total_bytes, "payload_bytes": payload_bytes,
                                       "metadata_bytes": metadata_bytes, "num_frames": len(originals), "encode_time_sec": 0.0,
@@ -123,12 +144,76 @@ def run_rd(config_path):
                                       "reconstruction_video": video["path"] if video else None,
                                       "reconstruction_video_bytes": video["bytes"] if video else None,
                                       "status": "matched" if abs(actual-target)/target <= config["rd"]["bitrate_match_tolerance_percent"]/100 else "bitrate_unreachable", **aggregate})
+        atlas_method = config["methods"].get("bistar_atlas", {})
+        if atlas_method.get("enabled", False):
+            atlas_config = load_atlas_config(resolve_path(atlas_method["config"], PROJECT_ROOT))
+            model_adapter = VideoMAEAdapter(load_yaml(PROJECT_ROOT / "configs/models/videomae.yaml"))
+            model_adapter.load_model()
+            fps = float(dataset_cfg["preprocessing"]["target_fps"])
+            for target in rates:
+                evaluated = match_atlas_bitrate(
+                    originals, fps, atlas_config,
+                    output / "artifacts" / row["sequence_id"] / "bistar_atlas" / str(target),
+                    target, config["rd"]["bitrate_match_tolerance_percent"],
+                    config["rd"].get("max_match_iterations", 8), model_adapter,
+                    lpips_model=lpips_model, compute_metrics=True,
+                )
+                current = []
+                atlas_patch_size = int(atlas_config["codec"]["patch_size"])
+                spatial = PatchQualityAccumulator(
+                    originals[0].shape[0], originals[0].shape[1], atlas_patch_size
+                )
+                for frame_id, metrics in enumerate(evaluated["frame_metrics"]):
+                    item = {"sequence_id": row["sequence_id"], "method": "bistar_atlas",
+                            "target_kbps": target, "frame_id": frame_id, **metrics}
+                    frame_rows.append(item); current.append(item)
+                    spatial.update(originals[frame_id], evaluated["reconstructed"][frame_id])
+                patch_rows.extend(spatial.rows_for(
+                    {"sequence_id": row["sequence_id"], "method": "bistar_atlas", "target_kbps": target},
+                    selection_frequency=evaluated["selection_frequency"],
+                ))
+                for gop in evaluated["gop_results"]:
+                    gop_rows.append({"sequence_id": row["sequence_id"], "method": "bistar_atlas",
+                                     "target_kbps": target, **gop})
+                video = None
+                if save_videomae_videos:
+                    video = write_rgb_video(
+                        evaluated["reconstructed"],
+                        output / "reconstructions" / row["sequence_id"] /
+                        "bistar_atlas_{}kbps.mp4".format(target),
+                        fps,
+                    )
+                aggregate = _aggregate(current, ["psnr", "ssim", "ms_ssim", "lpips"])
+                actual = evaluated["actual_bitrate_kbps"]
+                sequence_rows.append({
+                    "sequence_id": row["sequence_id"], "method": "bistar_atlas",
+                    "target_kbps": target, "actual_bitrate_kbps": actual,
+                    "requested_kbps": evaluated["requested_kbps"],
+                    "match_iterations": evaluated["match_iterations"],
+                    "total_bytes": evaluated["total_bytes"], "payload_bytes": evaluated["payload_bytes"],
+                    "metadata_bytes": evaluated["metadata_bytes"], "num_frames": len(originals),
+                    "encode_time_sec": 0.0, "decode_time_sec": evaluated["mean_latency_ms"] / 1000.0,
+                    "mean_latency_ms": evaluated["mean_latency_ms"],
+                    "p95_latency_ms": evaluated["p95_latency_ms"],
+                    "visible_patch_count": evaluated["visible_patch_count"],
+                    "visible_patch_counts": ",".join(str(value) for value in evaluated["visible_patch_counts"]),
+                    "patch_budget_strategy": evaluated["patch_budget_strategy"],
+                    "transport": evaluated["transport"], "evaluation_mode": evaluated["evaluation_mode"],
+                    "reconstruction_video": video["path"] if video else None,
+                    "reconstruction_video_bytes": video["bytes"] if video else None,
+                    "status": evaluated["status"],
+                    **aggregate,
+                })
     write_csv(frame_rows, output / "frame_results.csv"); write_csv(sequence_rows, output / "sequence_results.csv")
+    write_csv(gop_rows, output / "gop_results.csv")
+    write_csv(patch_rows, output / "patch_results.csv")
     write_csv(sequence_rows, output / "metrics.csv"); write_csv(sequence_rows, output / "rd_points.csv")
-    from src.reports.plots import plot_rd
+    from src.reports.plots import plot_patch_heatmaps, plot_rd
     from src.reports.tables import write_rd_table, write_runtime_table
     plot_rd(sequence_rows, output / "plots")
+    plot_patch_heatmaps(patch_rows, output / "plots" / "spatial")
     write_rd_table(sequence_rows, output / "tables/rate_distortion.csv")
     write_runtime_table(sequence_rows, output / "tables/runtime.csv")
-    summary = {"status": "complete", "sequences": len(rows), "points": len(sequence_rows), "frames": len(frame_rows)}
+    summary = {"status": "complete", "sequences": len(rows), "points": len(sequence_rows),
+               "frames": len(frame_rows), "spatial_patch_rows": len(patch_rows)}
     write_summary(summary, output / "summary.json"); return summary

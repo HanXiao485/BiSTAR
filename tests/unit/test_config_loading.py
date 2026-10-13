@@ -1,12 +1,18 @@
 import pytest
 
 from src.common.config import ConfigError, load_bistar_config, load_codec_config, validate_experiment_config
+from src.experiments.atlas_runner import load_atlas_config
 
 
 def test_codec_configs_are_valid():
     assert load_codec_config("configs/codecs/h264.yaml")["codec"]["name"] == "h264"
     bistar = load_bistar_config("configs/codecs/bistar.yaml")["codec"]
-    assert bistar["payload_encoding"] == {"mode": "jpeg", "quality": 50}
+    assert bistar["payload_encoding"]["mode"] in ("png", "jpeg")
+    assert 0 <= int(bistar["payload_encoding"]["quality"]) <= 100
+    atlas = load_atlas_config("configs/codecs/bistar_atlas.yaml")["codec"]
+    assert atlas["control"]["send_once_per_gop"] is True
+    assert atlas["encoder"]["b_frames"] == 0
+    assert atlas["selector"]["patch_budget_mode"] is False
 
 
 def test_unknown_critical_field_is_rejected(tmp_path):

@@ -1,6 +1,7 @@
 import queue
 import subprocess
 import time
+from pathlib import Path
 from abc import ABC, abstractmethod
 
 from src.common.types import DecodedFrame, FrameRecord
@@ -89,3 +90,95 @@ class CodecRealtimeSession(_QueueSession):
                                        packet["encode_end_timestamp_ns"], receive, start, end, end,
                                        len(packet["payload"]), 0, len(packet["payload"]),
                                        {"codec": packet["codec"], "evaluation_mode": "causal"}))
+
+
+class AtlasRealtimeSession(_QueueSession):
+    """GOP-buffered patch-atlas transport with explicit algorithmic waiting."""
+    def __init__(self, selector, model_adapter, atlas_config, output_dir, sequence_number=0, fps=15):
+        super().__init__()
+        self.selector = selector
+        self.model_adapter = model_adapter
+        self.codec = atlas_config["codec"] if "codec" in atlas_config else atlas_config
+        self.output_dir = Path(output_dir)
+        self.sequence_number = sequence_number
+        self.fps = float(fps)
+        self.frames = []
+        self.previous_source = None
+        self.gop_id = 0
+        self.budget_controller = None
+
+    def push_frame(self, frame):
+        self.frames.append(frame)
+        if len(self.frames) >= int(self.codec["gop_size"]):
+            self._flush()
+
+    def flush(self):
+        if self.frames:
+            self._flush()
+
+    def _flush(self):
+        from src.bistar.transport.atlas import encode_atlas_gop
+        started = time.time_ns()
+        records = self.frames
+        self.frames = []
+        expected = int(self.codec["gop_size"])
+        rgb = [record.rgb for record in records]
+        padded = rgb + [rgb[-1]] * (expected - len(rgb))
+        first = rgb[0]
+        if self.budget_controller is None:
+            from src.bistar.transport.patch_budget import PatchBudgetController
+            patch_size = int(self.codec["patch_size"])
+            patch_count = (first.shape[0] // patch_size) * (first.shape[1] // patch_size)
+            target_kbps = float(self.codec["encoder"].get("bitrate_kbps", 100))
+            self.budget_controller = PatchBudgetController(
+                self.codec["selector"], target_kbps, patch_count, target_kbps=target_kbps
+            )
+        gaze = self._gaze or (first.shape[1] / 2.0, first.shape[0] / 2.0, 1.0)
+        selection = self.selector.select(
+            first, self.previous_source, gaze, self.budget_controller.current
+        )
+        encoded = encode_atlas_gop(
+            padded, selection["selected_indices"], self.fps, int(self.codec["patch_size"]),
+            self.output_dir, self.codec["encoder"], sequence_id=self.sequence_number,
+            gop_id=self.gop_id, start_frame_id=records[0].frame_id,
+            timestamp_ns=records[0].timestamp_ns,
+        )
+        ended = time.time_ns()
+        target_kbps = float(self.codec["encoder"].get("bitrate_kbps", 100))
+        self.budget_controller.update(encoded["total_bytes"], len(padded), self.fps, target_kbps)
+        self._packets.put({
+            "wire": encoded["wire"], "valid_frames": len(records),
+            "visible_patch_count": len(selection["selected_indices"]),
+            "patch_budget_strategy": self.budget_controller.strategy,
+            "capture_timestamps_ns": [record.timestamp_ns for record in records],
+            "encode_start_timestamp_ns": started, "encode_end_timestamp_ns": ended,
+        })
+        self.previous_source = rgb[-1]
+        self.gop_id += 1
+
+    def push_packet(self, packet):
+        from src.bistar.transport.atlas import decode_atlas_gop
+        received = time.time_ns()
+        decoded = decode_atlas_gop(packet["wire"])
+        decode_started = time.time_ns()
+        reconstructed = self.model_adapter.reconstruct_clip(
+            decoded["sparse_frames"], decoded["visible_mask"]
+        )
+        decode_ended = time.time_ns()
+        valid_count = int(packet["valid_frames"])
+        payload_base, payload_remainder = divmod(decoded["payload_bytes"], valid_count)
+        metadata_base, metadata_remainder = divmod(decoded["metadata_bytes"], valid_count)
+        for offset in range(valid_count):
+            payload = payload_base + (1 if offset < payload_remainder else 0)
+            metadata = metadata_base + (1 if offset < metadata_remainder else 0)
+            self._decoded.put(DecodedFrame(
+                str(decoded["sequence_id"]), decoded["start_frame_id"] + offset,
+                reconstructed[offset], packet["capture_timestamps_ns"][offset],
+                packet["encode_start_timestamp_ns"], packet["encode_end_timestamp_ns"],
+                packet["encode_end_timestamp_ns"], received, decode_started, decode_ended,
+                decode_ended, payload, metadata, payload + metadata,
+                {"codec": "h264_patch_atlas", "gop_id": decoded["gop_id"],
+                 "evaluation_mode": "chunked_causal_selection",
+                 "visible_patch_count": packet["visible_patch_count"],
+                 "patch_budget_strategy": packet["patch_budget_strategy"]},
+            ))

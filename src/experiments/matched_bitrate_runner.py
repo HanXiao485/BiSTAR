@@ -6,6 +6,7 @@ from src.common.config import load_bistar_config, load_codec_config, load_yaml, 
 from src.datasets.manifest import read_manifest
 from src.datasets.frame_reader import preprocess_video, read_rgb_frames, write_rgb_video
 from src.experiments.bistar_runner import evaluate_videomae_clip, resolve_patch_budget_options, select_budget_for_rate
+from src.experiments.atlas_runner import load_atlas_config, match_atlas_bitrate
 from src.bistar.reconstruction.videomae_adapter import VideoMAEAdapter
 from .runner import PROJECT_ROOT, prepare_run, write_csv, write_summary
 
@@ -99,4 +100,39 @@ def run_matched(config_path):
                                 "inference_ms_per_frame": inference_time * 1000.0 / len(frames),
                                 "reconstruction_video": video["path"] if video else None,
                                 "reconstruction_video_bytes": video["bytes"] if video else None})
+        if frames and "bistar_atlas" in config.get("methods", []):
+            atlas_config = load_atlas_config(resolve_path(config["bistar_atlas"]["config"], PROJECT_ROOT))
+            model_adapter = VideoMAEAdapter(load_yaml(PROJECT_ROOT / "configs/models/videomae.yaml"))
+            model_adapter.load_model()
+            fps = float(ds["preprocessing"]["target_fps"])
+            for target in options["target_kbps"]:
+                evaluated = match_atlas_bitrate(
+                    frames, fps, atlas_config,
+                    output / "artifacts" / sequence["sequence_id"] / "bistar_atlas" / str(target),
+                    target, options["tolerance_percent"], options["max_iterations"],
+                    model_adapter, compute_metrics=False,
+                )
+                video = None
+                if save_videomae_videos:
+                    video = write_rgb_video(
+                        evaluated["reconstructed"],
+                        output / "reconstructions" / sequence["sequence_id"] /
+                        "bistar_atlas_{}kbps.mp4".format(target),
+                        fps,
+                    )
+                actual = evaluated["actual_bitrate_kbps"]
+                results.append({
+                    "sequence_id": sequence["sequence_id"], "method": "bistar_atlas",
+                    "target_kbps": target, "requested_kbps": evaluated["requested_kbps"],
+                    "actual_kbps": actual, "error_percent": (actual-target)/target*100,
+                    "iterations": evaluated["match_iterations"], "status": evaluated["status"],
+                    "visible_patch_count": evaluated["visible_patch_count"],
+                    "visible_patch_counts": ",".join(str(value) for value in evaluated["visible_patch_counts"]),
+                    "patch_budget_strategy": evaluated["patch_budget_strategy"],
+                    "mean_latency_ms": evaluated["mean_latency_ms"],
+                    "p95_latency_ms": evaluated["p95_latency_ms"],
+                    "transport": evaluated["transport"], "evaluation_mode": evaluated["evaluation_mode"],
+                    "reconstruction_video": video["path"] if video else None,
+                    "reconstruction_video_bytes": video["bytes"] if video else None,
+                })
     write_csv(results, output / "metrics.csv"); write_summary({"status": "complete", "results": results}, output / "summary.json"); return results

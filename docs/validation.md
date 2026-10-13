@@ -24,3 +24,16 @@ PYTHONNOUSERSITE=1 /home/xiaohan/anaconda3/envs/bistar/bin/python scripts/run_re
 ```
 
 The synthetic acceptance dataset is deterministic, 224×224, 15 FPS. Formal experiments should replace its manifest rows with the paper dataset while keeping the same preprocessing and runner paths.
+
+## GOP patch atlas validation
+
+Validated on 2026-10-13 on branch `dev` with FFmpeg 4.4.2.
+
+- `python -m pytest -q`: 42 passed, 1 skipped. The skipped checkpoint forward test requires the configured `cuda:0`, which was unavailable to the validation process.
+- All seven RD, matched-bitrate, ablation, and real-time YAML files passed schema validation.
+- A 16-frame segment from `datasets/raw/test.mp4` completed atlas selection, H.264 encode/decode, packet accounting, and sparse-frame restoration. It produced one GOP with 23,825 total wire bytes, including 68 metadata bytes, at 178.688 kbps for a 100 kbps encoder request.
+- `scripts/run_realtime.py --config configs/experiments/realtime.yaml` completed its dependency and protocol-readiness check.
+
+The full VideoMAE experiment runners require access to the GPU selected by `configs/models/videomae.yaml`. The transport test above deliberately stopped before neural reconstruction; the checkpoint integration test runs automatically when CUDA is visible.
+
+The adaptive GOP controller was also checked on 48 frames from `test.mp4`. At target rates of 50, 100, and 300 kbps, the first three GOP budgets were `[81, 64, 49]`, `[144, 121, 100]`, and `[196, 169, 144]`, respectively. This verifies target-rate initialization, causal feedback from prior wire bytes, configured candidate quantization, and the 196-patch upper bound.

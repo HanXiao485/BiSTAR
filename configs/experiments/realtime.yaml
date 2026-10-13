@@ -5,3 +5,7 @@ experiment:
   evaluation_mode: causal
   save_videomae_videos: true
 network: {enabled: false, interface: lo, bandwidth_kbps: 200, delay_ms: 100, jitter_ms: 20, loss_percent: 1.0}
+methods:
+  h264: {enabled: true}
+  h265: {enabled: true}
+  bistar_atlas: {enabled: true, config: configs/codecs/bistar_atlas.yaml}

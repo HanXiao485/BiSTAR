@@ -11,6 +11,7 @@ from src.common.config import load_bistar_config, load_yaml, resolve_path, valid
 from src.datasets.frame_reader import read_rgb_frames, write_rgb_video
 from src.datasets.manifest import read_manifest
 from src.experiments.bistar_runner import encode_sparse_clip, evaluate_videomae_clip
+from src.experiments.atlas_runner import evaluate_atlas_sequence, load_atlas_config
 from src.bistar.reconstruction.videomae_adapter import VideoMAEAdapter
 from src.metrics.image_quality import create_lpips_model, frame_metrics, roi_metrics
 from src.metrics.temporal_quality import residual_difference
@@ -32,8 +33,10 @@ def run_ablation(config_path):
     reconstruction_type = codec["reconstruction"]["type"]
     lpips_model = create_lpips_model("cpu")
     save_videomae = bool(cfg["experiment"].get("save_videomae_videos", False))
+    transports = cfg["ablation"].get("transports", ["jpeg_patch"])
+    atlas_config = load_atlas_config(resolve_path(cfg["bistar_atlas"]["config"], PROJECT_ROOT)) if "h264_atlas" in transports else None
     model_adapter = None
-    if save_videomae:
+    if save_videomae or atlas_config is not None:
         model_adapter = VideoMAEAdapter(load_yaml(PROJECT_ROOT / "configs/models/videomae.yaml"))
         model_adapter.load_model()
     for seq_num, sequence in enumerate(sequences):
@@ -53,7 +56,8 @@ def run_ablation(config_path):
                     roi_value = roi_metrics(frame, reconstructed, roi, lpips_model); roi_values.append(roi_value)
                     temporal = None if previous_source is None else residual_difference(previous_source, frame, previous_reconstructed, reconstructed)
                     if temporal is not None: temporal_values.append(temporal)
-                    frame_results.append({"sequence_id": sequence["sequence_id"], "selector": variant, "visible_patch_count": budget,
+                    frame_results.append({"sequence_id": sequence["sequence_id"], "transport": "jpeg_patch",
+                                          "selector": variant, "visible_patch_count": budget,
                                           "frame_id": frame_id, "payload_bytes": sizes["payload_bytes"], "metadata_bytes": sizes["metadata_bytes"],
                                           "total_bytes": sizes["total_bytes"], "reconstruction_ms": latencies[-1], "temporal_error": temporal, **values, **roi_value})
                     previous_source, previous_reconstructed = frame, reconstructed
@@ -87,7 +91,8 @@ def run_ablation(config_path):
                         "{}_{}patches.mp4".format(variant, budget),
                         float(ds["preprocessing"]["target_fps"]),
                     )
-                results.append({"sequence_id": sequence["sequence_id"], "selector": variant, "visible_patch_count": budget,
+                results.append({"sequence_id": sequence["sequence_id"], "transport": "jpeg_patch",
+                                "selector": variant, "visible_patch_count": budget,
                                 "actual_bitrate_kbps": total_bytes*8/duration/1000, "payload_bitrate_kbps": payload_bytes*8/duration/1000,
                                 "metadata_bitrate_kbps": metadata_bytes*8/duration/1000, "ssim": float(np.mean([x["ssim"] for x in metrics])),
                                 "lpips": float(np.mean([x["lpips"] for x in metrics])),
@@ -98,6 +103,63 @@ def run_ablation(config_path):
                                 "payload_encoding_quality": payload_encoding["quality"],
                                 "videomae_reconstruction_video": videomae_video["path"] if videomae_video else None,
                                 "videomae_reconstruction_video_bytes": videomae_video["bytes"] if videomae_video else None})
+                if atlas_config is not None:
+                    fps = float(ds["preprocessing"]["target_fps"])
+                    atlas = evaluate_atlas_sequence(
+                        frames, fps, atlas_config,
+                        output / "atlas_artifacts" / sequence["sequence_id"] /
+                        "{}_{}patches".format(variant, budget),
+                        selector_type=variant, visible_patch_count=budget,
+                        model_adapter=model_adapter, lpips_model=lpips_model, compute_metrics=True,
+                        sequence_number=seq_num,
+                    )
+                    atlas_roi = []
+                    atlas_temporal = []
+                    previous_source = previous_reconstructed = None
+                    for frame_id, (frame, reconstructed, values, latency) in enumerate(zip(
+                            frames, atlas["reconstructed"], atlas["frame_metrics"], atlas["frame_latencies_ms"])):
+                        roi = np.zeros(frame.shape[:2], dtype=bool)
+                        h, w = frame.shape[:2]; roi[h//4:3*h//4, w//4:3*w//4] = True
+                        roi_value = roi_metrics(frame, reconstructed, roi, lpips_model)
+                        temporal = None if previous_source is None else residual_difference(
+                            previous_source, frame, previous_reconstructed, reconstructed
+                        )
+                        if temporal is not None:
+                            atlas_temporal.append(temporal)
+                        atlas_roi.append(roi_value)
+                        frame_results.append({
+                            "sequence_id": sequence["sequence_id"], "transport": "h264_atlas",
+                            "selector": variant, "visible_patch_count": budget, "frame_id": frame_id,
+                            "reconstruction_ms": latency, "temporal_error": temporal,
+                            **values, **roi_value,
+                        })
+                        previous_source, previous_reconstructed = frame, reconstructed
+                    atlas_video = None
+                    if save_videomae:
+                        atlas_video = write_rgb_video(
+                            atlas["reconstructed"],
+                            output / "atlas_reconstructions" / sequence["sequence_id"] /
+                            "{}_{}patches.mp4".format(variant, budget),
+                            fps,
+                        )
+                    results.append({
+                        "sequence_id": sequence["sequence_id"], "transport": "h264_atlas",
+                        "selector": variant, "visible_patch_count": budget,
+                        "actual_bitrate_kbps": atlas["actual_bitrate_kbps"],
+                        "payload_bitrate_kbps": atlas["payload_bytes"]*8/duration/1000,
+                        "metadata_bitrate_kbps": atlas["metadata_bytes"]*8/duration/1000,
+                        "ssim": float(np.mean([x["ssim"] for x in atlas["frame_metrics"]])),
+                        "lpips": float(np.mean([x["lpips"] for x in atlas["frame_metrics"]])),
+                        "roi_ssim": float(np.mean([x["roi_ssim"] for x in atlas_roi])),
+                        "roi_lpips": float(np.mean([x["roi_lpips"] for x in atlas_roi])),
+                        "temporal_error": float(np.mean(atlas_temporal)) if atlas_temporal else 0.0,
+                        "reconstruction_ms": atlas["mean_latency_ms"],
+                        "p95_latency_ms": atlas["p95_latency_ms"],
+                        "fps": 1000.0 / atlas["mean_latency_ms"],
+                        "evaluation_mode": atlas["evaluation_mode"],
+                        "videomae_reconstruction_video": atlas_video["path"] if atlas_video else None,
+                        "videomae_reconstruction_video_bytes": atlas_video["bytes"] if atlas_video else None,
+                    })
     write_csv(frame_results, output / "frame_results.csv"); write_csv(results, output / "sequence_results.csv")
     from src.reports.tables import write_ablation_table
     write_ablation_table(results, output / "tables/ablation.csv")

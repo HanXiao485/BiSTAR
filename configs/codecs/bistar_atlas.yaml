@@ -1,0 +1,25 @@
+codec:
+  name: bistar_atlas
+  implementation: gop_patch_atlas
+  patch_size: 16
+  gop_size: 16
+  selector:
+    type: bistar_full
+    patch_budget_mode: false
+    num_visible_patches: 40
+    min_visible_patches: 16
+    max_visible_patches: 196
+    candidate_visible_patches: [16, 25, 36, 49, 64, 81, 100, 121, 144, 169, 196]
+    adaptation_alpha: 0.5
+    max_patch_step: 36
+    seed: 0
+  control: {mask_encoding: bitmask, send_once_per_gop: true}
+  encoder:
+    codec_name: libx264
+    preset: ultrafast
+    tune: zerolatency
+    mode: bitrate
+    bitrate_kbps: 100
+    crf: 23
+    b_frames: 0
+  reconstruction: {type: videomae, window_frames: 16, output_policy: chunk}

@@ -14,6 +14,7 @@ methods:
   h264: {enabled: true, config: configs/codecs/h264.yaml}
   h265: {enabled: true, config: configs/codecs/h265.yaml}
   bistar: {enabled: true, config: configs/codecs/bistar.yaml}
+  bistar_atlas: {enabled: true, config: configs/codecs/bistar_atlas.yaml}
 bistar:
   patch_budget_mode: false
   visible_patch_count: 40
