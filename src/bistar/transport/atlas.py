@@ -1,6 +1,7 @@
 import math
 import struct
 import subprocess
+import shlex
 from pathlib import Path
 
 import numpy as np
@@ -88,9 +89,15 @@ def _encode_h264(frames, fps, output_path, encoder):
                     "-bufsize", "{}k".format(max(1.0, bitrate * 2.0))]
     else:
         command += ["-crf", str(encoder.get("crf", 23))]
+    if encoder.get("pixel_format"):
+        command += ["-pix_fmt", str(encoder["pixel_format"])]
     command += ["-f", "h264", str(output_path)]
     payload = b"".join(np.ascontiguousarray(frame, dtype=np.uint8).tobytes() for frame in frames)
     result = subprocess.run(command, input=payload, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    output_path.with_suffix(".encode.log").write_text(
+        "$ " + shlex.join(command) + "\n" + result.stderr.decode("utf-8", errors="replace"),
+        encoding="utf-8",
+    )
     if result.returncode != 0:
         raise RuntimeError("Atlas encode failed: {}".format(result.stderr.decode("utf-8", errors="replace")))
     return output_path.read_bytes()

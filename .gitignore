@@ -3,15 +3,12 @@
 .pytest_cache/
 .venv/
 .conda/
-outputs/*
-!outputs/.gitkeep
-datasets/raw/*
-!datasets/raw/.gitkeep
-checkpoints/*
-!checkpoints/.gitkeep
+/datasets/
+/outputs/
+/tests/
+/checkpoints/
 third_party/VideoMAE/*
 !third_party/VideoMAE/.gitkeep
-checkpoints/torch/
 
 # Ignore files and directories whose names contain "test","smoke"
 *test*

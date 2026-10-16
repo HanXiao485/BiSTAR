@@ -74,6 +74,7 @@ def validate_experiment_config(data: Dict[str, Any], kind: str) -> Dict[str, Any
         "matched_bitrate": shared | {"matched_bitrate", "methods", "bistar", "bistar_atlas", "metrics", "runtime", "logging"},
         "ablation": shared | {"ablation", "bistar", "bistar_atlas", "metrics", "runtime", "logging"},
         "realtime": {"experiment", "network", "methods", "runtime", "logging"},
+        "roi_search": shared | {"roi", "search", "methods", "model", "metrics", "runtime", "logging"},
     }
     if kind not in allowed: raise ConfigError("Unknown experiment kind: {}".format(kind))
     unknown = set(data) - allowed[kind]

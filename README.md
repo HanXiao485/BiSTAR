@@ -624,6 +624,14 @@ PYTHONNOUSERSITE=1 python -m pytest -q
 
 ## 相关文档
 
+逐帧任务 ROI 标注、四方法配置搜索、独立留出验证、最佳配置和增益图表的使用方法见
+[视觉关键区域配置搜索](docs/roi_config_search.md)。入口为：
+
+```bash
+python scripts/run_roi_search.py --config configs/experiments/roi_config_search.yaml --plan
+python scripts/run_roi_search.py --config configs/experiments/roi_config_search.yaml
+```
+
 - `BiSTAR_Benchmark_Infrastructure.md`：原始工程规格；
 - `docs/architecture.md`：掩码转换、稀疏输入和无隐藏真值泄漏说明；
 - `docs/validation.md`：已验收环境、版本和命令记录；

@@ -37,3 +37,17 @@ Validated on 2026-10-13 on branch `dev` with FFmpeg 4.4.2.
 The full VideoMAE experiment runners require access to the GPU selected by `configs/models/videomae.yaml`. The transport test above deliberately stopped before neural reconstruction; the checkpoint integration test runs automatically when CUDA is visible.
 
 The adaptive GOP controller was also checked on 48 frames from `test.mp4`. At target rates of 50, 100, and 300 kbps, the first three GOP budgets were `[81, 64, 49]`, `[144, 121, 100]`, and `[196, 169, 144]`, respectively. This verifies target-rate initialization, causal feedback from prior wire bytes, configured candidate quantization, and the 196-patch upper bound.
+
+## Annotated ROI configuration search
+
+Validated on 2026-10-15 on branch `dev`.
+
+- Full regression suite: 48 passed, 1 skipped (the existing configured-CUDA checkpoint test cannot access CUDA in this process).
+- Four-method end-to-end integration covers independent ROI loading, temporal holdout, candidate selection, wire accounting, plots, metadata, and resume.
+- Generated a standalone annotation editor and blank 175-frame CSV template for the existing `test.mp4` manifest. Editor JavaScript passed `node --check`.
+- Ran an actual VideoMAE checkpoint on CPU with four PyTorch threads for a real-video pipeline demonstration. This per-run device override did not edit the shared CUDA model configuration.
+- `outputs/roi_search_demo/strict_run` evaluated eight configurations at 100 kbps, with seven matching the 1% target tolerance. Four configurations selected on 105 calibration frames were frozen and evaluated on 54 held-out frames, separated by a 16-frame gap.
+- Held-out ROI SSIM: H.264 0.874184, H.265 0.866112, BiSTAR 0.273328, BiSTAR Atlas 0.929634. Actual rates were 99.7822, 100.6422, 100.4178, and 100.2067 kbps, respectively. Atlas's selected configuration used gaze-only selection, 64 fixed patches, x264 fast, yuv420p, and VideoMAE reconstruction.
+- All demo ROIs are explicitly labelled `example_center_proxy`, and the summary records `proxy_ROI_only: true`. These figures validate the experiment implementation and do not establish task-ROI or teleoperation performance.
+
+Formal search defaults to independent `val`/`test` videos and requires completed task annotations. Single-video temporal holdout is available only as an exploratory protocol. See `docs/roi_config_search.md`.

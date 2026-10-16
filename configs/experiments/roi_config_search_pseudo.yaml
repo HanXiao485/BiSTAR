@@ -1,0 +1,58 @@
+experiment:
+  name: roi_config_search_pseudo
+  seed: 0
+  output_dir: outputs/roi_config_search_pseudo
+  save_videomae_videos: true
+dataset:
+  config: configs/datasets/test_mp4.yaml
+  split: test
+roi:
+  annotations: datasets/annotations/task_roi_template.csv
+  coordinate_space: normalized
+  use_gaze_for_selection: true
+  allow_proxy_annotations: true
+model:
+  config: configs/models/videomae.yaml
+search:
+  target_bitrates_kbps: [100, 200, 300]
+  tolerance_percent: 1.0
+  pair_tolerance_percent: 2.0
+  max_match_iterations: 12
+  objective: roi_ssim
+  resume: true
+  partition: {mode: temporal_holdout, calibration_fraction: 0.6, gap_frames: 16}
+metrics:
+  patch_psnr_threshold: 30.0
+  patch_ssim_threshold: 0.9
+methods:
+  h264:
+    enabled: true
+    config: configs/codecs/h264.yaml
+    grid:
+      encoder.preset: [medium]
+      encoder.gop_size: [16]
+      encoder.tune: [zerolatency]
+  h265:
+    enabled: true
+    config: configs/codecs/h265.yaml
+    grid:
+      encoder.preset: [medium]
+      encoder.gop_size: [16]
+      encoder.tune: [zerolatency]
+  bistar:
+    enabled: true
+    config: configs/codecs/bistar.yaml
+    grid:
+      selector.type: [gaze_only, bistar_full]
+      selector.patch_budget_mode: [false]
+      payload_encoding.quality: [10, 50, 90]
+      reconstruction.type: [videomae]
+  bistar_atlas:
+    enabled: true
+    config: configs/codecs/bistar_atlas.yaml
+    grid:
+      selector.type: [gaze_only, bistar_full]
+      selector.patch_budget_mode: [true]
+      selector.num_visible_patches: [36, 64, 100]
+      encoder.preset: [fast]
+      encoder.pixel_format: [yuv420p]

@@ -20,7 +20,12 @@ class PatchBudgetController:
         reference_kbps = max(float(reference_kbps), 1e-6)
         target_kbps = reference_kbps if target_kbps is None else float(target_kbps)
         initial = self.reference_budget if self.fixed else self.reference_budget * target_kbps / reference_kbps
-        self.current = self._quantize(initial)
+        if self.fixed:
+            if not 1 <= self.reference_budget <= patch_count:
+                raise ValueError("Fixed num_visible_patches must be in [1, patch_count]")
+            self.current = self.reference_budget
+        else:
+            self.current = self._quantize(initial)
 
     @property
     def strategy(self):
@@ -34,7 +39,12 @@ class PatchBudgetController:
         blended = self.current + self.alpha * (estimated - self.current)
         lower = self.current - self.max_step
         upper = self.current + self.max_step
-        self.current = self._quantize(min(upper, max(lower, blended)))
+        candidates = [candidate for candidate in self.candidates if lower <= candidate <= upper]
+        bounded = min(self.maximum, max(self.minimum, int(round(min(upper, max(lower, blended))))))
+        if self.candidates:
+            self.current = min(candidates, key=lambda candidate: (abs(candidate - bounded), candidate)) if candidates else self.current
+        else:
+            self.current = bounded
         return self.current
 
     def _quantize(self, value):
