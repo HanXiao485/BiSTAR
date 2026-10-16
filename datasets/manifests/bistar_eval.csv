@@ -1,2 +1,0 @@
-sequence_id,video_path,fps,width,height,num_frames,split
-synthetic,datasets/raw/synthetic.mkv,15,224,224,30,test
