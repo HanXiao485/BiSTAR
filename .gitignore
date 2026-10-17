@@ -13,3 +13,8 @@ third_party/VideoMAE/*
 # Ignore files and directories whose names contain "test","smoke"
 *test*
 *smoke*
+
+# Keep the EyeTrackUAV2 adapter regression test despite the broad test rules.
+!/tests/
+!/tests/unit/
+!/tests/unit/test_eyetrackuav2.py

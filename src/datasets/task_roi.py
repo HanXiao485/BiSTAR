@@ -36,21 +36,38 @@ def read_task_annotations(path, coordinate_space="normalized"):
                     raise ValueError("Invalid gaze point at {}".format(key))
                 if coordinate_space == "normalized" and max(gaze) > 1:
                     raise ValueError("Normalized gaze coordinates must be in [0, 1]")
+            roi_valid = _optional_bool(row.get("roi_valid"), True, "roi_valid", key)
+            gaze_valid = _optional_bool(row.get("gaze_valid"), gaze is not None, "gaze_valid", key)
             annotations.setdefault(key, []).append({"box": box, "gaze": gaze,
-                                                   "provenance": row["provenance"]})
+                                                   "provenance": row["provenance"],
+                                                   "roi_valid": roi_valid,
+                                                   "gaze_valid": gaze_valid})
     if not annotations:
         raise ValueError("ROI CSV is empty")
     return annotations
 
 
-def frame_annotations(annotations, sequence_id, frame_ids, height, width, coordinate_space):
-    masks, gaze_points, provenance = [], [], set()
+def _optional_bool(value, default, name, key):
+    if value is None or str(value).strip() == "":
+        return bool(default)
+    normalized = str(value).strip().lower()
+    if normalized in ("1", "true", "yes"):
+        return True
+    if normalized in ("0", "false", "no"):
+        return False
+    raise ValueError("Invalid {} at {}: {}".format(name, key, value))
+
+
+def frame_annotations_with_validity(annotations, sequence_id, frame_ids, height, width, coordinate_space):
+    masks, gaze_points, provenance, roi_validity, gaze_validity = [], [], set(), [], []
     for frame_id in frame_ids:
         key = (sequence_id, int(frame_id))
         if key not in annotations:
             raise ValueError("Missing task ROI for {} frame {}".format(*key))
         mask = np.zeros((height, width), dtype=bool)
         gaze = None
+        frame_roi_valid = False
+        frame_gaze_valid = False
         for annotation in annotations[key]:
             box = np.asarray(annotation["box"], dtype=float)
             if coordinate_space == "normalized":
@@ -71,8 +88,18 @@ def frame_annotations(annotations, sequence_id, frame_ids, height, width, coordi
                     raise ValueError("Conflicting gaze annotations at {}".format(key))
                 gaze = candidate
             provenance.add(annotation["provenance"])
+            frame_roi_valid = frame_roi_valid or annotation.get("roi_valid", True)
+            frame_gaze_valid = frame_gaze_valid or annotation.get("gaze_valid", gaze is not None)
         if not mask.any():
             raise ValueError("Empty task ROI at {}".format(key))
         masks.append(mask)
         gaze_points.append(gaze)
-    return masks, gaze_points, sorted(provenance)
+        roi_validity.append(frame_roi_valid)
+        gaze_validity.append(frame_gaze_valid)
+    return masks, gaze_points, sorted(provenance), roi_validity, gaze_validity
+
+
+def frame_annotations(annotations, sequence_id, frame_ids, height, width, coordinate_space):
+    masks, gaze, provenance, _, _ = frame_annotations_with_validity(
+        annotations, sequence_id, frame_ids, height, width, coordinate_space)
+    return masks, gaze, provenance

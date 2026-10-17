@@ -9,10 +9,12 @@ from src.datasets.frame_reader import preprocess_video, read_rgb_frames, write_r
 from src.datasets.manifest import read_manifest
 from src.metrics.image_quality import create_lpips_model, frame_metrics
 from src.metrics.spatial_quality import PatchQualityAccumulator
+from src.common.progress import ProgressBar
 from src.experiments.bistar_runner import evaluate_videomae_clip, resolve_patch_budget_options, select_budget_for_rate
 from src.experiments.atlas_runner import load_atlas_config, match_atlas_bitrate
 from src.bistar.reconstruction.videomae_adapter import VideoMAEAdapter
 from .runner import PROJECT_ROOT, prepare_run, write_csv, write_summary
+from .video_budget import VideoSaveLimiter
 
 
 ADAPTERS = {"h264": H264Adapter, "h265": H265Adapter}
@@ -25,6 +27,7 @@ def _aggregate(rows, keys):
 def run_rd(config_path):
     config = validate_experiment_config(load_yaml(config_path), "rd"); output = prepare_run(config, resolve_path(config["experiment"]["output_dir"], PROJECT_ROOT))
     save_videomae_videos = bool(config["experiment"].get("save_videomae_videos", False))
+    video_limiter = VideoSaveLimiter(config["experiment"].get("max_videomae_videos"))
     patch_budget_mode, fixed_patch_count = resolve_patch_budget_options(config)
     dataset_cfg = load_yaml(resolve_path(config["dataset"]["config"], PROJECT_ROOT))["dataset"]
     rows = read_manifest(resolve_path(dataset_cfg["manifest"], PROJECT_ROOT), config["dataset"].get("split", "test"))
@@ -33,6 +36,9 @@ def run_rd(config_path):
     spatial_patch_size = int(load_yaml(PROJECT_ROOT / "configs/models/videomae.yaml")["model"]["architecture"]["patch_size"])
     lpips_model = create_lpips_model("cpu") if "lpips" in config.get("quality_metrics", ["lpips"]) else None
     rates = config["rd"]["target_bitrates_kbps"]
+    method_count = sum(bool(config["methods"].get(name, {}).get("enabled", False))
+                       for name in ("h264", "h265", "bistar", "bistar_atlas"))
+    progress = ProgressBar(len(rows) * len(rates) * max(1, method_count), "RD sweep")
     for row in rows:
         raw_source = resolve_path(row["video_path"], PROJECT_ROOT)
         common = preprocess_video(raw_source, output / "sources" / (row["sequence_id"] + ".mkv"), dataset_cfg["preprocessing"])
@@ -79,6 +85,7 @@ def run_rd(config_path):
                                           "reconstruction_video": comparison_video["path"],
                                           "reconstruction_video_bytes": comparison_video["bytes"],
                                           "status": "matched" if abs(encoded["actual_bitrate_kbps"]-target)/target*100 <= tolerance else "bitrate_unreachable"})
+                progress.update(message="{} {} {}".format(row["sequence_id"], method, target))
         bistar_cfg = config["methods"].get("bistar", {})
         if bistar_cfg.get("enabled", False):
             codec = load_bistar_config(resolve_path(bistar_cfg["config"], PROJECT_ROOT))["codec"]
@@ -121,7 +128,7 @@ def run_rd(config_path):
                         )
                 duration = len(originals) / fps; actual = total_bytes * 8 / duration / 1000
                 video = None
-                if save_videomae_videos:
+                if save_videomae_videos and video_limiter.acquire():
                     video = write_rgb_video(
                         reconstructed_frames,
                         output / "reconstructions" / row["sequence_id"] / "bistar_{}kbps.mp4".format(target),
@@ -144,6 +151,7 @@ def run_rd(config_path):
                                       "reconstruction_video": video["path"] if video else None,
                                       "reconstruction_video_bytes": video["bytes"] if video else None,
                                       "status": "matched" if abs(actual-target)/target <= config["rd"]["bitrate_match_tolerance_percent"]/100 else "bitrate_unreachable", **aggregate})
+                progress.update(message="{} bistar {}".format(row["sequence_id"], target))
         atlas_method = config["methods"].get("bistar_atlas", {})
         if atlas_method.get("enabled", False):
             atlas_config = load_atlas_config(resolve_path(atlas_method["config"], PROJECT_ROOT))
@@ -176,7 +184,7 @@ def run_rd(config_path):
                     gop_rows.append({"sequence_id": row["sequence_id"], "method": "bistar_atlas",
                                      "target_kbps": target, **gop})
                 video = None
-                if save_videomae_videos:
+                if save_videomae_videos and video_limiter.acquire():
                     video = write_rgb_video(
                         evaluated["reconstructed"],
                         output / "reconstructions" / row["sequence_id"] /
@@ -204,6 +212,8 @@ def run_rd(config_path):
                     "status": evaluated["status"],
                     **aggregate,
                 })
+                progress.update(message="{} bistar_atlas {}".format(row["sequence_id"], target))
+    progress.close()
     write_csv(frame_rows, output / "frame_results.csv"); write_csv(sequence_rows, output / "sequence_results.csv")
     write_csv(gop_rows, output / "gop_results.csv")
     write_csv(patch_rows, output / "patch_results.csv")

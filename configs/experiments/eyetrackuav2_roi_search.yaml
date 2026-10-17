@@ -1,0 +1,59 @@
+experiment:
+  name: eyetrackuav2_roi_search
+  seed: 0
+  output_dir: outputs/eyetrackuav2_roi_search
+  save_videomae_videos: true
+  max_videomae_videos: 10
+dataset:
+  config: configs/datasets/eyetrackuav2.yaml
+roi:
+  annotations: datasets/annotations/eyetrackuav2_task.csv
+  coordinate_space: normalized
+  use_gaze_for_selection: true
+  allow_proxy_annotations: false
+model:
+  config: configs/models/videomae.yaml
+search:
+  target_bitrates_kbps: [100, 200, 300]
+  tolerance_percent: 1.0
+  pair_tolerance_percent: 2.0
+  max_match_iterations: 12
+  objective: roi_ssim
+  resume: true
+  partition: {mode: manifest_splits, calibration_split: val, validation_split: test}
+metrics:
+  patch_psnr_threshold: 30.0
+  patch_ssim_threshold: 0.9
+methods:
+  h264:
+    enabled: true
+    config: configs/codecs/h264.yaml
+    grid:
+      encoder.preset: [medium]
+      encoder.gop_size: [8, 16]
+      encoder.tune: [zerolatency]
+  h265:
+    enabled: true
+    config: configs/codecs/h265.yaml
+    grid:
+      encoder.preset: [medium]
+      encoder.gop_size: [8, 16]
+      encoder.tune: [zerolatency]
+  bistar:
+    enabled: true
+    config: configs/codecs/bistar.yaml
+    grid:
+      selector.type: [gaze_only, gaze_edge, bistar_full]
+      selector.patch_budget_mode: [false]
+      payload_encoding.mode: [jpeg]
+      payload_encoding.quality: [10, 30, 50]
+      reconstruction.type: [videomae]
+  bistar_atlas:
+    enabled: true
+    config: configs/codecs/bistar_atlas.yaml
+    grid:
+      selector.type: [gaze_only, gaze_edge, bistar_full]
+      selector.patch_budget_mode: [true, false]
+      selector.num_visible_patches: [16, 36, 64, 100]
+      encoder.preset: [fast]
+      encoder.pixel_format: [yuv420p]

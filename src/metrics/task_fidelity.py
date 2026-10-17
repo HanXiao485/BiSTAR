@@ -42,23 +42,36 @@ def task_frame_metrics(reference, reconstructed, roi_mask, patch_size=16,
 
 
 def evaluate_task_sequence(reference, reconstructed, masks, metadata, visible_masks=None,
-                           patch_size=16, psnr_threshold=30.0, ssim_threshold=0.9):
+                           patch_size=16, psnr_threshold=30.0, ssim_threshold=0.9,
+                           valid_frames=None):
     if not (len(reference) == len(reconstructed) == len(masks)):
         raise ValueError("Source, reconstruction and ROI frame counts must match")
     spatial = PatchQualityAccumulator(reference[0].shape[0], reference[0].shape[1], patch_size)
+    if valid_frames is None:
+        valid_frames = [True] * len(reference)
+    if len(valid_frames) != len(reference):
+        raise ValueError("ROI validity and source frame counts must match")
     frame_rows = []
-    for index, (source, decoded, roi) in enumerate(zip(reference, reconstructed, masks)):
+    for index, (source, decoded, roi, valid) in enumerate(zip(reference, reconstructed, masks, valid_frames)):
         visible = visible_masks[index] if visible_masks is not None else None
-        values = task_frame_metrics(source, decoded, roi, patch_size,
-                                    psnr_threshold, ssim_threshold, visible)
-        frame_rows.append({**metadata, "local_frame_id": index, **values})
+        values = (task_frame_metrics(source, decoded, roi, patch_size,
+                                     psnr_threshold, ssim_threshold, visible)
+                  if valid else {key: None for key in (
+                      "roi_mse", "roi_psnr", "roi_ssim", "roi_normalized_l1",
+                      "critical_patch_retention", "roi_visible_coverage", "roi_pixels")})
+        frame_rows.append({**metadata, "local_frame_id": index, "roi_valid": bool(valid), **values})
         spatial.update(source, decoded, visible)
-    mean = {key: float(np.mean([row[key] for row in frame_rows]))
+    valid_rows = [row for row in frame_rows if row["roi_valid"]]
+    if not valid_rows:
+        raise ValueError("No valid task ROI frames")
+    mean = {key: float(np.mean([row[key] for row in valid_rows]))
             for key in ("roi_ssim", "roi_normalized_l1", "critical_patch_retention")}
     mean["roi_psnr"] = float(10 * np.log10(255.0 ** 2 / max(
-        np.mean([row["roi_mse"] for row in frame_rows]), 1e-12)))
+        np.mean([row["roi_mse"] for row in valid_rows]), 1e-12)))
     mean["roi_visible_coverage"] = (
-        float(np.mean([row["roi_visible_coverage"] for row in frame_rows]))
+        float(np.mean([row["roi_visible_coverage"] for row in valid_rows]))
         if visible_masks is not None else None
     )
+    mean["roi_valid_frames"] = len(valid_rows)
+    mean["roi_valid_fraction"] = len(valid_rows) / len(frame_rows)
     return mean, frame_rows, spatial.rows_for(metadata)

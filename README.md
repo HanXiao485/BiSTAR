@@ -187,6 +187,52 @@ sequence_001,datasets/raw/sequence_001.mp4,30,1920,1080,300,test
 
 `configs/datasets/bistar_eval.yaml` 默认把输入统一到 224×224、15 FPS、RGB24。H.264、H.265 和 BiSTAR 使用同一预处理结果，以保证分辨率、帧率、帧区间和帧对齐一致。
 
+### EyeTrackUAV2 数据集
+
+下载官方逐毫秒眼动原始数据：
+
+```bash
+/home/xiaohan/anaconda3/envs/bistar/bin/python \
+  scripts/download_eyetrackuav2.py
+```
+
+默认下载到 `datasets/raw/EyeTrackUAV2`，支持 `.part` 断点续传，并生成远端清单、下载状态与 SHA-256。项目实验实际读取官方 `RAW_DATA_OrigRes_DomEye` 的 13 列 CSV；完整 FTP 镜像还包含 ASC、EDF、fixation、saccade 和 heatmap 等原件或派生数据。若只准备实验所需输入，也可直接镜像该子目录，详见 [EyeTrackUAV2 接入说明](docs/eyetrackuav2_adapter.md)。
+
+使用 wget 镜像或中断续传后，可按保存的官方目录清单检查文件大小并计算哈希：
+
+```bash
+python scripts/audit_eyetrackuav2.py --condition TASK --checksums
+```
+
+EyeTrackUAV2 的 FTP 不包含刺激视频。取得与实验完全一致的 UAV123、DTB70 和 VIRAT 刺激片段后，先运行：
+
+```bash
+/home/xiaohan/anaconda3/envs/bistar/bin/python \
+  scripts/prepare_eyetrackuav2.py --template-only
+```
+
+命令会根据实际下载内容生成 `datasets/metadata/eyetrackuav2/video_map.csv`。逐项填写精确刺激视频路径和按原始视频分组的 `val` / `test` 划分，然后转换：
+
+```bash
+/home/xiaohan/anaconda3/envs/bistar/bin/python \
+  scripts/prepare_eyetrackuav2.py --strict
+```
+
+输出为 `datasets/manifests/eyetrackuav2.csv`、`datasets/annotations/eyetrackuav2_task.csv` 以及获取、观察者和有效率元数据。转换器使用真实注视生成评价 ROI，编码选择器只接收当前时刻可用的历史注视；无效眼动帧继续计入传输码率，但不计入 ROI 质量均值。
+
+先检查实验计划，再启动正式搜索：
+
+```bash
+python scripts/run_roi_search.py \
+  --config configs/experiments/eyetrackuav2_roi_search.yaml --plan
+
+python scripts/run_roi_search.py \
+  --config configs/experiments/eyetrackuav2_roi_search.yaml \
+  --device cuda:0 --threads 4
+```
+
+该实验复用现有 H.264、H.265、BiSTAR 和 BiSTAR-Atlas 实现；EyeTrackUAV2 代码只负责数据发现、时间/坐标对齐、有效性和配置接口。
+
 ## 配置实验
 
 所有命令通过 `--config` 接受 YAML 文件。建议复制现有配置后修改：
@@ -205,6 +251,16 @@ experiment:
   output_dir: outputs/example
   save_videomae_videos: true
 ```
+
+如果只需要保存少量可视化结果，可设置 `max_videomae_videos`。该参数限制一次实验实际写入磁盘的 VideoMAE/BiSTAR 重建视频数量，不影响编码、质量指标、码率搜索或 CSV 结果；`null` 表示不限制，`0` 表示不保存：
+
+```yaml
+experiment:
+  save_videomae_videos: true
+  max_videomae_videos: 8
+```
+
+保存顺序按实验执行顺序确定，达到上限后后续结果的 `reconstruction_video` 字段为空。H.264/H.265 对照码流视频仍按原有逻辑保存。
 
 设为 `true` 时保存 VideoMAE 重建视频，设为 `false` 时仍执行重建和指标计算，但跳过
 VideoMAE MP4 写出。H.264/H.265 对比视频仍会保存。重复使用同一个 `output_dir` 会更新

@@ -11,12 +11,14 @@ import numpy as np
 from src.bistar.reconstruction.videomae_adapter import VideoMAEAdapter
 from src.common.config import dump_yaml, load_yaml, resolve_path, validate_experiment_config
 from src.common.hashing import sha256_file
+from src.common.progress import ProgressBar
 from src.datasets.frame_reader import preprocess_video, read_rgb_frames, write_rgb_video
 from src.datasets.manifest import read_manifest
-from src.datasets.task_roi import frame_annotations, read_task_annotations
+from src.datasets.task_roi import frame_annotations_with_validity, read_task_annotations
 from src.experiments.config_search import OBJECTIVES, choose_winners, compare_validation, expand_candidates
 from src.experiments.runner import PROJECT_ROOT, prepare_run, write_csv, write_summary
 from src.experiments.search_codecs import evaluate_candidate
+from src.experiments.video_budget import VideoSaveLimiter
 from src.metrics.task_fidelity import evaluate_task_sequence
 
 
@@ -90,17 +92,19 @@ def _sequence_partitions(config, dataset):
 
 
 def _prepare_sources(config, dataset, output, annotations):
-    sources, materialized = {}, {}
+    sources, materialized, slices = {}, {}, {}
     records = []
     for phase, row in _sequence_partitions(config, dataset):
         sequence_id = row["sequence_id"]
         raw = resolve_path(row["video_path"], PROJECT_ROOT)
-        if sequence_id not in materialized:
-            source_path = output / "sources" / sequence_id / "common.mkv"
+        materialized_key = str(raw.resolve())
+        if materialized_key not in materialized:
+            shared_id = hashlib.sha256(materialized_key.encode()).hexdigest()[:16]
+            source_path = output / "sources" / "_shared" / shared_id / "common.mkv"
             common = preprocess_video(raw, source_path, dataset["preprocessing"])
             frames = read_rgb_frames(source_path)
-            materialized[sequence_id] = (frames, common, sha256_file(raw))
-        frames, common, raw_hash = materialized[sequence_id]
+            materialized[materialized_key] = (frames, common, sha256_file(raw), shared_id)
+        frames, common, raw_hash, shared_id = materialized[materialized_key]
         partition = config["search"]["partition"]
         if partition["mode"] == "temporal_holdout":
             boundary = int(len(frames) * float(partition["calibration_fraction"]))
@@ -112,22 +116,27 @@ def _prepare_sources(config, dataset, output, annotations):
         selected = frames[start:end]
         frame_ids = list(range(start, end))
         roi = config["roi"]
-        masks, gaze, provenance = frame_annotations(
+        masks, gaze, provenance, roi_validity, gaze_validity = frame_annotations_with_validity(
             annotations, sequence_id, frame_ids, selected[0].shape[0], selected[0].shape[1],
             roi.get("coordinate_space", "normalized"),
         )
         if roi.get("use_gaze_for_selection", False) and any(point is None for point in gaze):
             raise ValueError("use_gaze_for_selection requires gaze annotations on every evaluated frame")
-        source = output / "sources" / sequence_id / (phase + ".mkv")
-        # Lossless slice materialization avoids counting other partition frames in rate.
-        command = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", common["path"],
-                   "-vf", "trim=start_frame={}:end_frame={},setpts=PTS-STARTPTS".format(start, end),
-                   "-an", "-c:v", "ffv1", str(source)]
-        subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        if len(read_rgb_frames(source)) != len(selected):
-            raise RuntimeError("Partition source frame alignment failed")
+        slice_key = (materialized_key, start, end)
+        if slice_key not in slices:
+            source = output / "sources" / "_shared" / shared_id / "{}_{}.mkv".format(start, end)
+            # Lossless slice materialization avoids counting other partition frames in rate.
+            command = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", common["path"],
+                       "-vf", "trim=start_frame={}:end_frame={},setpts=PTS-STARTPTS".format(start, end),
+                       "-an", "-c:v", "ffv1", str(source)]
+            subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            if len(read_rgb_frames(source)) != len(selected):
+                raise RuntimeError("Partition source frame alignment failed")
+            slices[slice_key] = source
+        source = slices[slice_key]
         sources[(phase, sequence_id)] = {"frames": selected, "source": source, "masks": masks,
-                                         "gaze": gaze, "frame_ids": frame_ids}
+                                         "gaze": gaze, "frame_ids": frame_ids,
+                                         "roi_validity": roi_validity, "gaze_validity": gaze_validity}
         records.append({"phase": phase, "sequence_id": sequence_id, "source_path": str(raw),
                         "source_sha256": raw_hash, "preprocessed_sha256": sha256_file(source),
                         "start_frame": start, "end_frame_exclusive": end, "num_frames": len(selected),
@@ -207,6 +216,7 @@ def run_roi_search(config_path, device=None, plan_only=False, model_adapter=None
     for candidate in candidates:
         dump_yaml(candidate["config"], output / (candidate["candidate_id"] + ".yaml"))
     sources = _prepare_sources(config, dataset, output, annotations)
+    video_limiter = VideoSaveLimiter(config["experiment"].get("max_videomae_videos"))
     from src.reports.search_plots import plot_roi_preview
     plot_roi_preview(sources, output / "plots" / "annotations")
     models = [model_adapter]
@@ -250,13 +260,15 @@ def run_roi_search(config_path, device=None, plan_only=False, model_adapter=None
                     source["frames"], evaluated["reconstructed"], source["masks"], metadata,
                     evaluated["visible_masks"], psnr_threshold=metrics.get("patch_psnr_threshold", 30.0),
                     ssim_threshold=metrics.get("patch_ssim_threshold", 0.9),
+                    valid_frames=source["roi_validity"],
                 )
                 row.update(quality)
                 for frame, frame_id in zip(frame_rows, source["frame_ids"]):
                     frame["frame_id"] = frame_id
                 write_csv(frame_rows, trial_dir / "frame_results.csv")
                 write_csv(patch_rows, trial_dir / "patch_results.csv")
-                if config["experiment"].get("save_videomae_videos", True):
+                if (config["experiment"].get("save_videomae_videos", True)
+                        and video_limiter.acquire()):
                     video = write_rgb_video(evaluated["reconstructed"], trial_dir / "reconstructed.mp4",
                                             float(dataset["preprocessing"]["target_fps"]))
                     row["reconstruction_video"] = video["path"]
@@ -272,6 +284,7 @@ def run_roi_search(config_path, device=None, plan_only=False, model_adapter=None
     calibration_ids = [sequence for phase, sequence in sources if phase == "calibration"]
     total_trials = len(calibration_ids) * len(candidates) * len(rates)
     count = 0
+    progress = ProgressBar(total_trials, "ROI calibration")
     for candidate in candidates:
         for target in rates:
             for sequence_id in calibration_ids:
@@ -280,9 +293,9 @@ def run_roi_search(config_path, device=None, plan_only=False, model_adapter=None
                 if row["status"] == "failed":
                     failed.append(row)
                 count += 1
-                print("[{}/{}] {} {} kbps {}: {}".format(count, total_trials, candidate["candidate_id"],
-                                                       target, sequence_id, row["status"]), flush=True)
+                progress.update(count, "{} {} {}".format(candidate["method"], target, row["status"]))
                 write_csv(all_rows, output / "calibration_results.csv")
+    progress.close()
     winners = choose_winners(all_rows, config["search"]["objective"])
     write_csv(winners, output / "best_configs.csv")
     catalog_by_id = {candidate["candidate_id"]: candidate for candidate in candidates}

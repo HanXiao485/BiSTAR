@@ -13,9 +13,11 @@ from src.datasets.manifest import read_manifest
 from src.experiments.bistar_runner import encode_sparse_clip, evaluate_videomae_clip
 from src.experiments.atlas_runner import evaluate_atlas_sequence, load_atlas_config
 from src.bistar.reconstruction.videomae_adapter import VideoMAEAdapter
+from src.common.progress import ProgressBar
 from src.metrics.image_quality import create_lpips_model, frame_metrics, roi_metrics
 from src.metrics.temporal_quality import residual_difference
 from .runner import PROJECT_ROOT, prepare_run, write_csv, write_summary
+from .video_budget import VideoSaveLimiter
 
 
 SELECTORS = {"random": RandomSelector, "gaze_only": GazeSelector, "temporal_only": TemporalSSIMSelector,
@@ -33,8 +35,12 @@ def run_ablation(config_path):
     reconstruction_type = codec["reconstruction"]["type"]
     lpips_model = create_lpips_model("cpu")
     save_videomae = bool(cfg["experiment"].get("save_videomae_videos", False))
+    video_limiter = VideoSaveLimiter(cfg["experiment"].get("max_videomae_videos"))
     transports = cfg["ablation"].get("transports", ["jpeg_patch"])
     atlas_config = load_atlas_config(resolve_path(cfg["bistar_atlas"]["config"], PROJECT_ROOT)) if "h264_atlas" in transports else None
+    progress = ProgressBar(
+        len(sequences) * len(cfg["ablation"]["variants"]) * len(cfg["ablation"]["visible_patch_counts"])
+        * (1 + int(atlas_config is not None)), "Ablation")
     model_adapter = None
     if save_videomae or atlas_config is not None:
         model_adapter = VideoMAEAdapter(load_yaml(PROJECT_ROOT / "configs/models/videomae.yaml"))
@@ -64,7 +70,7 @@ def run_ablation(config_path):
                     total_bytes += sizes["total_bytes"]; payload_bytes += sizes["payload_bytes"]; metadata_bytes += sizes["metadata_bytes"]
                 duration = len(frames) / float(ds["preprocessing"]["target_fps"])
                 videomae_video = None
-                if save_videomae:
+                if save_videomae and video_limiter.acquire():
                     reconstructed_frames = []
                     video_selector = SELECTORS[variant](patch_size=patch_size)
                     clip_size = 16
@@ -103,6 +109,7 @@ def run_ablation(config_path):
                                 "payload_encoding_quality": payload_encoding["quality"],
                                 "videomae_reconstruction_video": videomae_video["path"] if videomae_video else None,
                                 "videomae_reconstruction_video_bytes": videomae_video["bytes"] if videomae_video else None})
+                progress.update(message="{} {} {}".format(sequence["sequence_id"], variant, budget))
                 if atlas_config is not None:
                     fps = float(ds["preprocessing"]["target_fps"])
                     atlas = evaluate_atlas_sequence(
@@ -135,7 +142,7 @@ def run_ablation(config_path):
                         })
                         previous_source, previous_reconstructed = frame, reconstructed
                     atlas_video = None
-                    if save_videomae:
+                    if save_videomae and video_limiter.acquire():
                         atlas_video = write_rgb_video(
                             atlas["reconstructed"],
                             output / "atlas_reconstructions" / sequence["sequence_id"] /
@@ -160,6 +167,8 @@ def run_ablation(config_path):
                         "videomae_reconstruction_video": atlas_video["path"] if atlas_video else None,
                         "videomae_reconstruction_video_bytes": atlas_video["bytes"] if atlas_video else None,
                     })
+                    progress.update(message="{} atlas {} {}".format(sequence["sequence_id"], variant, budget))
+    progress.close()
     write_csv(frame_results, output / "frame_results.csv"); write_csv(results, output / "sequence_results.csv")
     from src.reports.tables import write_ablation_table
     write_ablation_table(results, output / "tables/ablation.csv")

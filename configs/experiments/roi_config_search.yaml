@@ -3,6 +3,7 @@ experiment:
   seed: 0
   output_dir: outputs/roi_config_search
   save_videomae_videos: true
+  max_videomae_videos: null
 dataset:
   config: configs/datasets/bistar_eval.yaml
 roi:
