@@ -233,6 +233,37 @@ python scripts/run_roi_search.py \
 
 该实验复用现有 H.264、H.265、BiSTAR 和 BiSTAR-Atlas 实现；EyeTrackUAV2 代码只负责数据发现、时间/坐标对齐、有效性和配置接口。
 
+当前数据清单包含 22 段 UAV123、9 段 DTB70（7 段 `val` 用于选参，24 段 `test` 用于留出评价），尚无 VIRAT。进行完整的四方法正式比较可用扩展后的配置：
+
+```bash
+python scripts/run_roi_search.py --config configs/experiments/eyetrackuav2_formal.yaml --plan
+python scripts/run_roi_search.py --config configs/experiments/eyetrackuav2_formal.yaml --device cuda:0 --threads 4
+```
+
+它在 100、200、300 kbps 分别搜索 H.264/H.265 的预设和 GOP、BiSTAR 的选择器和 JPEG 质量、BiSTAR-Atlas 的选择器与自适应 K 初始参考值。Atlas 固定使用 `selector.patch_budget_mode: false`，由因果 GOP 级控制器根据上一 GOP 的完整传输字节调整下一 GOP 的 K；配置中的 `num_visible_patches` 是初始参考值，不是整个视频的固定 K。最佳配置只按 `val` 上的 ROI SSIM 选择，不使用全局画面质量。在 `test` 上，只有同一视频、两端均达到目标码率且实际码率差不超过 2% 的结果才算可比较。新运行写入 `outputs/eyetrackuav2_formal_adaptive_k`，避免与旧结果和缓存混用。若 GPU 不可用，VideoMAE 模型会在扫描前报错；正式实验需要可用的 CUDA 设备。
+
+正式搜索使用精简记录模式。运行过程中仍保留断点续跑所需的码流、帧结果和无损源副本；全部试验成功、CSV 和图表生成后，`artifact_retention: plot_data_only` 自动删除 `trials/`、`sources/` 和逐候选 YAML。最终保留绘图源 CSV、`plots/`、复现元数据、`best_configs/` 和少量视频对比。视频场景数量可配置：
+
+```yaml
+experiment:
+  save_videomae_videos: true
+  max_comparison_video_scenes: 3
+  comparison_video_sequence_ids: []  # 空列表：在全方法码率匹配场景中按 seed 确定性选择
+  artifact_retention: plot_data_only
+```
+
+程序先完成全部留出集评价，再筛出所有启用方法在全部目标码率下均匹配成功的场景，并仅按随机种子哈希选取，不读取 ROI SSIM 或全局质量，因此不会为了展示效果而挑选高增益样本。每个入选测试场景在每个目标码率下保存所有已冻结方法的重建视频，并生成 `comparison_grid.mp4`。网格会根据方法数量自动计算接近方形的行列数，支持任意正数个方法；不足一整行的位置以黑色补齐。方法顺序、网格布局、ROI SSIM 和实际码率记录在 `comparison_video_manifest.csv`。若要指定场景，可在 `comparison_video_sequence_ids` 中填写测试集 `sequence_id`；指定场景必须满足完整码率匹配，`max_comparison_video_scenes` 仍控制最多保存的场景数。
+
+`formal_analysis.md`、`formal_candidate_ranking.csv`、`formal_method_summary.csv`、`formal_paired_summary.csv` 和 `plots/formal_paired_roi_difference.png` 自动生成。后者显示同码率成对 ROI SSIM 差、按视频 bootstrap 的 95% 区间，以及胜出数/可比较数。只想重新汇总已有结果时运行：
+
+```bash
+python scripts/analyze_roi_search.py outputs/eyetrackuav2_formal_adaptive_k
+```
+
+若搜索中断，重新执行原来的 `run_roi_search.py` 命令即可续跑。损坏或空的 `result.json` 会自动重算，完整缓存继续复用；试验结果采用原子写入。仅运行器的缓存修复发生变化时，续跑会保留原始快照，并写入 `resume_code_metadata.json` 和 `resume_code_snapshot` 记录修复版本。其他代码、数据、模型或配置改变仍要求使用新的输出目录。
+
+搜索结果不能预设 BiSTAR 胜出；若可比较配对未胜出，报告会如实记录。视觉 ROI 保真度也不能直接等同于远程操控任务成功率。
+
 ## 配置实验
 
 所有命令通过 `--config` 接受 YAML 文件。建议复制现有配置后修改：

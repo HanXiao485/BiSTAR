@@ -1,7 +1,10 @@
 import csv
+import hashlib
+import json
 
 import cv2
 import numpy as np
+import pytest
 
 from src.datasets.eyetrackuav2 import (
     convert_observer, discover_eye_files, discover_video_ids, load_raw_gaze,
@@ -9,6 +12,12 @@ from src.datasets.eyetrackuav2 import (
 )
 from src.datasets.task_roi import frame_annotations_with_validity, read_task_annotations
 from src.metrics.task_fidelity import evaluate_task_sequence
+from src.common.config import dump_yaml
+from src.experiments.roi_search_runner import (
+    _comparison_layout, _compatible_resume_signature, _montage_filter,
+    _prune_intermediate_artifacts, _read_trial_cache, _select_comparison_sequences,
+    _write_trial_result,
+)
 
 
 def test_discovery_parsing_and_causal_conversion(tmp_path):
@@ -104,3 +113,90 @@ def test_validity_fields_exclude_invalid_roi_metrics(tmp_path):
     assert summary["roi_valid_frames"] == 1
     assert summary["roi_valid_fraction"] == 0.5
     assert frames[1]["roi_psnr"] is None
+
+
+def test_interrupted_roi_trial_cache_is_recomputed_and_atomic_replace_preserves_old_result(tmp_path, monkeypatch):
+    result = tmp_path / "result.json"
+    expected = {"phase": "calibration", "sequence_id": "video", "method": "bistar_atlas",
+                "candidate_id": "candidate", "target_kbps": 300}
+    result.write_text("")
+    assert _read_trial_cache(result, expected) is None
+    row = {**expected, "status": "matched", "actual_bitrate_kbps": 300.0, "roi_ssim": 0.8}
+    _write_trial_result(row, result)
+    assert _read_trial_cache(result, expected) == row
+    assert _read_trial_cache(result, {**expected, "target_kbps": 200}) is None
+
+    def interrupted_replace(source, target):
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr("src.experiments.roi_search_runner.os.replace", interrupted_replace)
+    with pytest.raises(KeyboardInterrupt):
+        _write_trial_result({**row, "roi_ssim": 0.9}, result)
+    assert json.loads(result.read_text()) == row
+    assert list(tmp_path.glob(".result-*.tmp")) == []
+
+
+def test_roi_resume_accepts_only_runner_code_change(tmp_path):
+    old_source = tmp_path / "code_snapshot" / "src" / "experiments" / "roi_search_runner.py"
+    old_source.parent.mkdir(parents=True)
+    old_source.write_text("old runner\n")
+    old_hash = hashlib.sha256(old_source.read_bytes()).hexdigest()
+    prior = {"experiment": {"name": "same"},
+             "code_hashes": {"src/experiments/roi_search_runner.py": old_hash,
+                             "src/bistar/selector.py": "unchanged"}}
+    dump_yaml(prior, tmp_path / "config_snapshot.yaml")
+    signature = hashlib.sha256(json.dumps(prior, sort_keys=True).encode()).hexdigest()
+    current = {"experiment": {"name": "same"},
+               "code_hashes": {**prior["code_hashes"],
+                               "src/experiments/roi_search_runner.py": "new hash"}}
+    assert _compatible_resume_signature(tmp_path, current, signature)
+    current["experiment"]["name"] = "different"
+    assert not _compatible_resume_signature(tmp_path, current, signature)
+
+
+def test_comparison_scene_selection_is_bounded_reproducible_and_not_quality_based():
+    sources = {("validation", name): {} for name in ("clip_c", "clip_a", "clip_d", "clip_b")}
+    sources[("calibration", "calibration_clip")] = {}
+    config = {"experiment": {"seed": 7, "max_comparison_video_scenes": 3}}
+    first = _select_comparison_sequences(config, sources)
+    assert len(first) == 3
+    assert first == _select_comparison_sequences(config, sources)
+    assert "calibration_clip" not in first
+    eligible_selection = _select_comparison_sequences(config, sources, {"clip_a", "clip_b"})
+    assert len(eligible_selection) == 2
+    assert set(eligible_selection) == {"clip_a", "clip_b"}
+    config["experiment"]["comparison_video_sequence_ids"] = ["clip_d", "clip_a"]
+    assert _select_comparison_sequences(config, sources) == ["clip_d", "clip_a"]
+
+
+def test_plot_data_retention_removes_only_large_intermediates(tmp_path):
+    (tmp_path / "trials").mkdir()
+    (tmp_path / "trials" / "result.json").write_text("{}")
+    (tmp_path / "sources").mkdir()
+    (tmp_path / "sources" / "source.mkv").write_bytes(b"source")
+    (tmp_path / "candidate.yaml").write_text("codec: {}\n")
+    (tmp_path / "plots").mkdir()
+    (tmp_path / "plots" / "figure.png").write_bytes(b"figure")
+    (tmp_path / "validation_results.csv").write_text("roi_ssim\n1.0\n")
+    metadata = _prune_intermediate_artifacts(
+        tmp_path, [{"candidate_id": "candidate"}])
+    assert metadata["cleanup_complete"]
+    assert not (tmp_path / "trials").exists()
+    assert not (tmp_path / "sources").exists()
+    assert not (tmp_path / "candidate.yaml").exists()
+    assert (tmp_path / "plots" / "figure.png").is_file()
+    assert (tmp_path / "validation_results.csv").is_file()
+
+
+def test_comparison_grid_supports_arbitrary_method_counts():
+    one, rows, columns = _montage_filter(1)
+    assert (rows, columns) == (1, 1)
+    assert "[0:v]" in one and one.endswith("[v]")
+    three, rows, columns = _montage_filter(3)
+    assert (rows, columns) == (2, 2)
+    assert "pad=" in three and "vstack=inputs=2" in three
+    five, rows, columns = _montage_filter(5)
+    assert (rows, columns) == (2, 3)
+    assert "hstack=inputs=3" in five and "pad=" in five
+    assert _comparison_layout(["a", "b", "c", "d", "e"]) == (
+        "grid=3x2; row-major=a,b,c,d,e")
