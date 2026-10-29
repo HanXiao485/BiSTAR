@@ -200,3 +200,45 @@ def test_comparison_grid_supports_arbitrary_method_counts():
     assert "hstack=inputs=3" in five and "pad=" in five
     assert _comparison_layout(["a", "b", "c", "d", "e"]) == (
         "grid=3x2; row-major=a,b,c,d,e")
+
+
+def test_tracked_window_receiver_round_trip_and_dynamic_mask(tmp_path):
+    from src.bistar.reconstruction.mask_adapter import MaskAdapter
+    from src.bistar.transport.tracked_window import (
+        HEADER, decode_tracked_window_gop, encode_tracked_window_gop,
+        track_window_positions,
+    )
+
+    points = [(16, 16), (18, 16), (46, 46), (48, 48)]
+    positions = track_window_positions(points, 64, 64, 32, 32, alignment=2,
+                                       deadband_pixels=4)
+    assert positions[0] == positions[1]
+    assert positions[2] != positions[1]
+
+    frames = []
+    for index in range(4):
+        frame = np.zeros((64, 64, 3), dtype=np.uint8)
+        frame[:, :, 0] = np.arange(64, dtype=np.uint8)[None, :]
+        frame[:, :, 1] = index * 30
+        frames.append(frame)
+    config = {"codec": {
+        "window": {"width": 32, "height": 32, "alignment": 2, "deadband_pixels": 4},
+        "encoder": {"codec_name": "libx264", "preset": "ultrafast",
+                    "tune": "zerolatency", "mode": "crf", "crf": 20,
+                    "pixel_format": "yuv420p", "gop_size": 4, "b_frames": 0},
+    }}
+    sent = encode_tracked_window_gop(frames, points, 15, config, tmp_path)
+    received = decode_tracked_window_gop(sent["wire"])
+    assert received["total_bytes"] == sent["total_bytes"]
+    assert received["metadata_bytes"] == HEADER.size + 4 * 4
+    assert received["visible_pixel_masks"].shape == (4, 64, 64)
+    assert np.all(np.asarray(received["sparse_frames"])[~received["visible_pixel_masks"]] == 0)
+
+    visible = np.ones((4, 2, 2), dtype=bool)
+    visible[1, 0, 0] = False
+    mask = MaskAdapter(num_frames=4, tubelet_size=2).build_dynamic(visible).reshape(2, 2, 2)
+    assert mask[0, 0, 0]
+    assert not mask[1].any()
+
+    with pytest.raises(ValueError, match="Truncated"):
+        decode_tracked_window_gop(b"BTWN")

@@ -6,7 +6,7 @@ import numpy as np
 
 from src.bistar.reconstruction.interpolation import InterpolationReconstructor
 from src.bistar.reconstruction.previous_frame import PreviousFrameReconstructor
-from src.bistar.transport.atlas import encode_atlas_gop
+from src.bistar.transport.atlas import decode_atlas_gop, encode_atlas_gop
 from src.bistar.transport.packetizer import Packetizer
 from src.bistar.transport.patch_budget import PatchBudgetController
 from src.bistar.transport.serializer import deserialize_packet
@@ -126,6 +126,11 @@ def sparse_sequence(frames, fps, candidate, output_dir, target, get_model, gaze_
                                            output_dir / "bitstreams", encoder,
                                            gop_id=gop_id, start_frame_id=start,
                                            timestamp_ns=int(start / fps * 1e9))
+                received = decode_atlas_gop(encoded["wire"])
+                if received["total_bytes"] != encoded["total_bytes"]:
+                    raise RuntimeError("Receiver and sender Atlas byte accounting differ")
+                encoded["sparse_frames"] = received["sparse_frames"]
+                encoded["visible_mask"] = received["visible_mask"]
             else:
                 encoded = _encode_sparse_gop(clip, selection, codec, fps, 0, start)
         transport_seconds = time.perf_counter() - began
@@ -133,13 +138,14 @@ def sparse_sequence(frames, fps, candidate, output_dir, target, get_model, gaze_
         inference = 0.0
         if reconstruct:
             began = time.perf_counter()
-            output = _reconstruct(encoded["sparse_frames"], selection["visible_mask"], codec,
+            receiver_mask = encoded.get("visible_mask", selection["visible_mask"])
+            output = _reconstruct(encoded["sparse_frames"], receiver_mask, codec,
                                   get_model, previous_decoded)
             inference = time.perf_counter() - began
             inference_seconds += inference
             previous_decoded = output[-1]
             reconstructed.extend(output)
-            masks.extend([selection["visible_mask"]] * len(clip))
+            masks.extend([receiver_mask] * len(clip))
             wire_dir = output_dir / "wire"
             wire_dir.mkdir(parents=True, exist_ok=True)
             if method == "bistar_atlas":

@@ -15,10 +15,10 @@ from src.bistar.selector import (
     StructuralSelector,
     TemporalSSIMSelector,
 )
-from src.bistar.transport.atlas import encode_atlas_gop
+from src.bistar.transport.atlas import decode_atlas_gop, encode_atlas_gop
 from src.bistar.transport.patch_budget import PatchBudgetController
 from src.common.config import load_yaml
-from src.metrics.image_quality import create_lpips_model, frame_metrics
+from src.metrics.image_quality import frame_metrics
 
 
 SELECTORS = {
@@ -82,9 +82,6 @@ def evaluate_atlas_sequence(frames, fps, atlas_config, output_dir, target_kbps=N
         model_adapter = model_adapter or VideoMAEAdapter(load_yaml("configs/models/videomae.yaml"))
         if model_adapter.model is None:
             model_adapter.load_model()
-    if compute_metrics and lpips_model is None:
-        lpips_model = create_lpips_model("cpu")
-
     reconstructed_frames = []
     metric_rows = []
     frame_latencies_ms = []
@@ -96,7 +93,6 @@ def evaluate_atlas_sequence(frames, fps, atlas_config, output_dir, target_kbps=N
     for gop_id, start in enumerate(range(0, len(frames), gop_size)):
         valid = frames[start:start + gop_size]
         valid_count = len(valid)
-        clip = valid + [valid[-1]] * (gop_size - valid_count)
         current = valid[0]
         gaze = (current.shape[1] / 2.0, current.shape[0] / 2.0, 1.0)
         budget = controller.current
@@ -105,24 +101,26 @@ def evaluate_atlas_sequence(frames, fps, atlas_config, output_dir, target_kbps=N
         selection_hits += selection["visible_mask"] * valid_count
         encode_started = time.perf_counter()
         encoded = encode_atlas_gop(
-            clip, selection["selected_indices"], fps, patch_size,
+            valid, selection["selected_indices"], fps, patch_size,
             Path(output_dir) / "atlas_bitstreams", encoder,
             sequence_id=sequence_number, gop_id=gop_id, start_frame_id=start,
             timestamp_ns=int(start / fps * 1e9),
         )
+        received = decode_atlas_gop(encoded["wire"])
+        if received["total_bytes"] != encoded["total_bytes"]:
+            raise RuntimeError("Receiver and sender Atlas byte accounting differ")
         encode_decode_seconds = time.perf_counter() - encode_started
         reconstructed = []
         inference_seconds = 0.0
         if reconstruct:
             inference_started = time.perf_counter()
-            reconstructed = model_adapter.reconstruct_clip(
-                encoded["sparse_frames"], encoded["visible_mask"]
-            )
+            model_input = received["sparse_frames"] + [received["sparse_frames"][-1]] * (
+                gop_size - valid_count)
+            reconstructed = model_adapter.reconstruct_clip(model_input, received["visible_mask"])
             inference_seconds = time.perf_counter() - inference_started
-        scale = valid_count / gop_size
-        gop_total = int(encoded["total_bytes"] * scale)
-        gop_payload = int(encoded["payload_bytes"] * scale)
-        gop_metadata = int(encoded["metadata_bytes"] * scale)
+        gop_total = received["total_bytes"]
+        gop_payload = received["payload_bytes"]
+        gop_metadata = received["metadata_bytes"]
         total_bytes += gop_total
         payload_bytes += gop_payload
         metadata_bytes += gop_metadata
@@ -146,6 +144,7 @@ def evaluate_atlas_sequence(frames, fps, atlas_config, output_dir, target_kbps=N
             "atlas_width": encoded["layout"]["width"],
             "atlas_height": encoded["layout"]["height"],
             "patch_budget_strategy": controller.strategy,
+            "tail_transport_policy": "valid_frames_only",
         })
         controller.update(gop_total, valid_count, fps, control_target_kbps)
         previous_source = valid[-1]

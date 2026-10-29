@@ -81,7 +81,11 @@ class FFmpegAdapter(CodecAdapter):
     def decode_sequence(self, bitstream_path: Path, output_dir: Path, config: dict) -> Dict[str, Any]:
         output_dir.mkdir(parents=True, exist_ok=True)
         output = output_dir / "decoded.mkv"
-        command = ["ffmpeg", "-y", "-i", str(bitstream_path), "-an", "-c:v", "ffv1", "-pix_fmt", "rgb24", str(output)]
+        # Elementary streams can expose slightly irregular inferred timestamps.
+        # Preserve every decoded picture instead of letting FFmpeg's default
+        # output synchronization drop a tail frame.
+        command = ["ffmpeg", "-y", "-i", str(bitstream_path), "-an", "-vsync", "0",
+                   "-c:v", "ffv1", "-pix_fmt", "rgb24", str(output)]
         elapsed = self._run(command, output_dir / "decode.log")
         probe = self.probe(output)
         probe.update({"decoded_path": str(output), "decode_time_sec": elapsed, "ffmpeg_command": shell_join(command)})

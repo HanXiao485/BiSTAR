@@ -9,6 +9,7 @@ import numpy as np
 
 MAGIC = b"BATL"
 HEADER = struct.Struct("!4sBIIIQHHHBBHII")
+X264_USER_DATA_UUID = bytes.fromhex("dc45e9bde6d948b7962cd820d923eeef")
 
 
 def encode_patch_mask(selected_indices, patch_count):
@@ -83,12 +84,17 @@ def _encode_h264(frames, fps, output_path, encoder):
         "-preset", str(encoder.get("preset", "ultrafast")), "-tune", str(encoder.get("tune", "zerolatency")),
         "-bf", "0", "-g", str(len(frames)), "-keyint_min", str(len(frames)), "-sc_threshold", "0",
     ]
-    if encoder.get("mode", "bitrate") == "bitrate":
+    mode = encoder.get("mode", "bitrate")
+    if mode == "bitrate":
         bitrate = float(encoder["bitrate_kbps"])
         command += ["-b:v", "{}k".format(bitrate), "-maxrate", "{}k".format(bitrate),
                     "-bufsize", "{}k".format(max(1.0, bitrate * 2.0))]
-    else:
+    elif mode == "crf":
         command += ["-crf", str(encoder.get("crf", 23))]
+    elif mode == "qp":
+        command += ["-qp", str(encoder["qp"])]
+    else:
+        raise ValueError("Unsupported Atlas rate-control mode: {}".format(mode))
     if encoder.get("pixel_format"):
         command += ["-pix_fmt", str(encoder["pixel_format"])]
     command += ["-f", "h264", str(output_path)]
@@ -101,6 +107,188 @@ def _encode_h264(frames, fps, output_path, encoder):
     if result.returncode != 0:
         raise RuntimeError("Atlas encode failed: {}".format(result.stderr.decode("utf-8", errors="replace")))
     return output_path.read_bytes()
+
+
+def _annexb_nals(payload):
+    """Return (start-code, NAL) pairs and reject non-Annex-B prefixes."""
+    starts = []
+    index = 0
+    while index + 3 <= len(payload):
+        if payload[index:index + 4] == b"\x00\x00\x00\x01":
+            starts.append((index, 4)); index += 4
+        elif payload[index:index + 3] == b"\x00\x00\x01":
+            starts.append((index, 3)); index += 3
+        else:
+            index += 1
+    if not starts or starts[0][0] != 0:
+        raise ValueError("H.264 payload is not a canonical Annex-B stream")
+    result = []
+    for position, (offset, size) in enumerate(starts):
+        end = starts[position + 1][0] if position + 1 < len(starts) else len(payload)
+        nal = payload[offset + size:end]
+        if not nal:
+            raise ValueError("Empty Annex-B NAL unit")
+        result.append((payload[offset:offset + size], nal))
+    return result
+
+
+def _ebsp_to_rbsp(data):
+    result = bytearray()
+    zeros = 0
+    index = 0
+    while index < len(data):
+        value = data[index]
+        if zeros >= 2 and value == 3:
+            if index + 1 >= len(data) or data[index + 1] > 3:
+                raise ValueError("Malformed emulation-prevention sequence")
+            zeros = 0
+            index += 1
+            continue
+        result.append(value)
+        zeros = zeros + 1 if value == 0 else 0
+        index += 1
+    return bytes(result)
+
+
+def _rbsp_to_ebsp(data):
+    result = bytearray()
+    zeros = 0
+    for value in data:
+        if zeros >= 2 and value <= 3:
+            result.append(3)
+            zeros = 0
+        result.append(value)
+        zeros = zeros + 1 if value == 0 else 0
+    return bytes(result)
+
+
+def _read_sei_number(rbsp, offset, label):
+    total = 0
+    while True:
+        if offset >= len(rbsp):
+            raise ValueError("Truncated SEI {}".format(label))
+        value = rbsp[offset]
+        offset += 1
+        total += value
+        if value != 0xFF:
+            return total, offset
+
+
+def _encode_sei_number(value):
+    if value < 0:
+        raise ValueError("SEI number must be nonnegative")
+    return b"\xff" * (value // 255) + bytes([value % 255])
+
+
+def parse_sei_messages(nal):
+    """Parse an H.264 prefix SEI NAL into messages and validate trailing bits."""
+    if not nal or nal[0] & 0x1F != 6:
+        raise ValueError("NAL unit is not H.264 SEI")
+    rbsp = _ebsp_to_rbsp(nal[1:])
+    messages = []
+    offset = 0
+    while offset < len(rbsp):
+        if rbsp[offset:] == b"\x80" or (
+                rbsp[offset] == 0x80 and not any(rbsp[offset + 1:])):
+            return messages
+        payload_type, offset = _read_sei_number(rbsp, offset, "payload type")
+        payload_size, offset = _read_sei_number(rbsp, offset, "payload size")
+        end = offset + payload_size
+        if end > len(rbsp):
+            raise ValueError("Truncated SEI payload")
+        messages.append({"payload_type": payload_type, "payload": rbsp[offset:end]})
+        offset = end
+    raise ValueError("SEI RBSP lacks trailing bits")
+
+
+def _is_x264_identification(message):
+    data = message["payload"]
+    return (message["payload_type"] == 5 and len(data) >= 16 and
+            data[:16] == X264_USER_DATA_UUID and data[16:].startswith(b"x264 - core"))
+
+
+def filter_encoder_identification_sei(payload):
+    """Remove only recognized x264 identification messages from Annex-B H.264."""
+    output = bytearray()
+    records = []
+    for nal_index, (start_code, nal) in enumerate(_annexb_nals(payload)):
+        nal_type = nal[0] & 0x1F
+        if nal_type != 6:
+            output.extend(start_code + nal)
+            records.append({"nal_index": nal_index, "nal_type": nal_type,
+                            "payload_type": None, "removed": False,
+                            "original_bytes": len(start_code) + len(nal),
+                            "filtered_bytes": len(start_code) + len(nal)})
+            continue
+        messages = parse_sei_messages(nal)
+        kept = []
+        for message_index, message in enumerate(messages):
+            removed = _is_x264_identification(message)
+            records.append({"nal_index": nal_index, "message_index": message_index,
+                            "nal_type": nal_type, "payload_type": message["payload_type"],
+                            "uuid": message["payload"][:16].hex()
+                            if message["payload_type"] == 5 and len(message["payload"]) >= 16 else None,
+                            "removed": removed, "payload_bytes": len(message["payload"])})
+            if not removed:
+                kept.append(message)
+        if not kept:
+            continue
+        rbsp = bytearray()
+        for message in kept:
+            rbsp.extend(_encode_sei_number(message["payload_type"]))
+            rbsp.extend(_encode_sei_number(len(message["payload"])))
+            rbsp.extend(message["payload"])
+        rbsp.append(0x80)
+        output.extend(start_code + bytes([nal[0]]) + _rbsp_to_ebsp(bytes(rbsp)))
+    filtered = bytes(output)
+    return filtered, {"original_bytes": len(payload), "filtered_bytes": len(filtered),
+                      "removed_bytes": len(payload) - len(filtered), "records": records}
+
+
+def analyze_annexb_h264(payload):
+    """Return a byte-exact NAL decomposition without changing the stream."""
+    categories = {1: "image", 5: "image", 6: "sei", 7: "parameter_set", 8: "parameter_set"}
+    rows = []
+    for index, (start_code, nal) in enumerate(_annexb_nals(payload)):
+        nal_type = nal[0] & 0x1F
+        messages = parse_sei_messages(nal) if nal_type == 6 else []
+        rows.append({
+            "nal_index": index,
+            "nal_type": nal_type,
+            "category": categories.get(nal_type, "other"),
+            "bytes": len(start_code) + len(nal),
+            "start_code_bytes": len(start_code),
+            "sei_payload_types": ",".join(str(item["payload_type"]) for item in messages),
+            "sei_uuids": ",".join(
+                item["payload"][:16].hex() for item in messages
+                if item["payload_type"] == 5 and len(item["payload"]) >= 16
+            ),
+        })
+    if sum(row["bytes"] for row in rows) != len(payload):
+        raise RuntimeError("NAL analysis does not account for the complete payload")
+    return rows
+
+
+def replace_atlas_payload(wire, payload):
+    """Replace BATL v1 codec payload while preserving and validating metadata."""
+    if len(wire) < HEADER.size:
+        raise ValueError("Truncated atlas packet")
+    values = list(HEADER.unpack_from(wire))
+    mask_size, old_payload_size = values[-2:]
+    if len(wire) != HEADER.size + mask_size + old_payload_size:
+        raise ValueError("Atlas packet length mismatch")
+    values[-1] = len(payload)
+    return HEADER.pack(*values) + wire[HEADER.size:HEADER.size + mask_size] + payload
+
+
+def filter_atlas_wire_encoder_sei(wire):
+    values = HEADER.unpack_from(wire)
+    mask_size, payload_size = values[-2:]
+    if len(wire) != HEADER.size + mask_size + payload_size:
+        raise ValueError("Atlas packet length mismatch")
+    payload = wire[HEADER.size + mask_size:]
+    filtered, report = filter_encoder_identification_sei(payload)
+    return replace_atlas_payload(wire, filtered), report
 
 
 def _decode_h264(payload, frame_count, height, width):
@@ -154,6 +342,8 @@ def encode_atlas_gop(frames, selected_indices, fps, patch_size, output_dir, enco
         "selected_indices": list(selected_indices),
         "layout": layout,
         "bitstream_path": str(bitstream_path),
+        "ffmpeg_command": bitstream_path.with_suffix(".encode.log").read_text(
+            encoding="utf-8").splitlines()[0].removeprefix("$ "),
     }
 
 

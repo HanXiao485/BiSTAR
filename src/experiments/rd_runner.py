@@ -12,6 +12,11 @@ from src.metrics.spatial_quality import PatchQualityAccumulator
 from src.common.progress import ProgressBar
 from src.experiments.bistar_runner import evaluate_videomae_clip, resolve_patch_budget_options, select_budget_for_rate
 from src.experiments.atlas_runner import load_atlas_config, match_atlas_bitrate
+from src.experiments.tracked_window_runner import (
+    load_tracked_window_config,
+    match_tracked_window_bitrate,
+    resolve_experiment_focus,
+)
 from src.bistar.reconstruction.videomae_adapter import VideoMAEAdapter
 from .runner import PROJECT_ROOT, prepare_run, write_csv, write_summary
 from .video_budget import VideoSaveLimiter
@@ -29,15 +34,17 @@ def run_rd(config_path):
     save_videomae_videos = bool(config["experiment"].get("save_videomae_videos", False))
     video_limiter = VideoSaveLimiter(config["experiment"].get("max_videomae_videos"))
     patch_budget_mode, fixed_patch_count = resolve_patch_budget_options(config)
+    model_config_path = resolve_path(
+        config.get("model", {}).get("config", "configs/models/videomae.yaml"), PROJECT_ROOT)
     dataset_cfg = load_yaml(resolve_path(config["dataset"]["config"], PROJECT_ROOT))["dataset"]
     rows = read_manifest(resolve_path(dataset_cfg["manifest"], PROJECT_ROOT), config["dataset"].get("split", "test"))
     if not rows: raise ValueError("Dataset manifest contains no selected sequences")
     frame_rows, sequence_rows, gop_rows, patch_rows = [], [], [], []
-    spatial_patch_size = int(load_yaml(PROJECT_ROOT / "configs/models/videomae.yaml")["model"]["architecture"]["patch_size"])
+    spatial_patch_size = int(load_yaml(model_config_path)["model"]["architecture"]["patch_size"])
     lpips_model = create_lpips_model("cpu") if "lpips" in config.get("quality_metrics", ["lpips"]) else None
     rates = config["rd"]["target_bitrates_kbps"]
     method_count = sum(bool(config["methods"].get(name, {}).get("enabled", False))
-                       for name in ("h264", "h265", "bistar", "bistar_atlas"))
+                       for name in ("h264", "h265", "bistar", "bistar_atlas", "bistar_tracked_window"))
     progress = ProgressBar(len(rows) * len(rates) * max(1, method_count), "RD sweep")
     for row in rows:
         raw_source = resolve_path(row["video_path"], PROJECT_ROOT)
@@ -91,7 +98,7 @@ def run_rd(config_path):
             codec = load_bistar_config(resolve_path(bistar_cfg["config"], PROJECT_ROOT))["codec"]
             patch_size = int(codec["patch_size"])
             payload_encoding = codec["payload_encoding"]
-            model_adapter = VideoMAEAdapter(load_yaml(PROJECT_ROOT / "configs/models/videomae.yaml")); model_adapter.load_model()
+            model_adapter = VideoMAEAdapter(load_yaml(model_config_path)); model_adapter.load_model()
             fps = float(dataset_cfg["preprocessing"]["target_fps"]); clip_size = 16
             for target in rates:
                 current, reconstructed_frames = [], []
@@ -155,7 +162,7 @@ def run_rd(config_path):
         atlas_method = config["methods"].get("bistar_atlas", {})
         if atlas_method.get("enabled", False):
             atlas_config = load_atlas_config(resolve_path(atlas_method["config"], PROJECT_ROOT))
-            model_adapter = VideoMAEAdapter(load_yaml(PROJECT_ROOT / "configs/models/videomae.yaml"))
+            model_adapter = VideoMAEAdapter(load_yaml(model_config_path))
             model_adapter.load_model()
             fps = float(dataset_cfg["preprocessing"]["target_fps"])
             for target in rates:
@@ -213,6 +220,66 @@ def run_rd(config_path):
                     **aggregate,
                 })
                 progress.update(message="{} bistar_atlas {}".format(row["sequence_id"], target))
+        window_method = config["methods"].get("bistar_tracked_window", {})
+        if window_method.get("enabled", False):
+            window_config = load_tracked_window_config(
+                resolve_path(window_method["config"], PROJECT_ROOT))
+            model_adapter = VideoMAEAdapter(load_yaml(model_config_path))
+            model_adapter.load_model()
+            fps = float(dataset_cfg["preprocessing"]["target_fps"])
+            focus_points, focus_provenance, _ = resolve_experiment_focus(
+                config, row["sequence_id"], originals, PROJECT_ROOT)
+            for target in rates:
+                evaluated = match_tracked_window_bitrate(
+                    originals, focus_points, fps, window_config,
+                    output / "artifacts" / row["sequence_id"] / "bistar_tracked_window" / str(target),
+                    target, config["rd"]["bitrate_match_tolerance_percent"],
+                    config["rd"].get("max_match_iterations", 8), model_adapter,
+                    lpips_model=lpips_model, compute_metrics=True,
+                )
+                current = []
+                spatial = PatchQualityAccumulator(
+                    originals[0].shape[0], originals[0].shape[1], spatial_patch_size)
+                for frame_id, metrics in enumerate(evaluated["frame_metrics"]):
+                    item = {"sequence_id": row["sequence_id"], "method": "bistar_tracked_window",
+                            "target_kbps": target, "frame_id": frame_id, **metrics}
+                    frame_rows.append(item); current.append(item)
+                    spatial.update(originals[frame_id], evaluated["reconstructed"][frame_id])
+                frequency = evaluated["selection_frequency_pixels"].reshape(
+                    spatial.rows, spatial_patch_size, spatial.columns, spatial_patch_size
+                ).mean(axis=(1, 3))
+                patch_rows.extend(spatial.rows_for(
+                    {"sequence_id": row["sequence_id"], "method": "bistar_tracked_window",
+                     "target_kbps": target}, selection_frequency=frequency))
+                for gop in evaluated["gop_results"]:
+                    gop_rows.append({"sequence_id": row["sequence_id"],
+                                     "method": "bistar_tracked_window", "target_kbps": target, **gop})
+                video = None
+                if save_videomae_videos and video_limiter.acquire():
+                    video = write_rgb_video(
+                        evaluated["reconstructed"], output / "reconstructions" / row["sequence_id"] /
+                        "bistar_tracked_window_{}kbps.mp4".format(target), fps)
+                window = window_config["codec"]["window"]
+                aggregate = _aggregate(current, ["psnr", "ssim", "ms_ssim", "lpips"])
+                sequence_rows.append({
+                    "sequence_id": row["sequence_id"], "method": "bistar_tracked_window",
+                    "target_kbps": target, "actual_bitrate_kbps": evaluated["actual_bitrate_kbps"],
+                    "requested_kbps": evaluated["requested_kbps"],
+                    "match_iterations": evaluated["match_iterations"],
+                    "total_bytes": evaluated["total_bytes"], "payload_bytes": evaluated["payload_bytes"],
+                    "metadata_bytes": evaluated["metadata_bytes"], "num_frames": len(originals),
+                    "mean_latency_ms": evaluated["mean_latency_ms"],
+                    "p95_latency_ms": evaluated["p95_latency_ms"],
+                    "window_width": window["width"], "window_height": window["height"],
+                    "encoded_area_fraction": window["width"] * window["height"] /
+                    (originals[0].shape[0] * originals[0].shape[1]),
+                    "focus_provenance": ",".join(focus_provenance),
+                    "transport": evaluated["transport"], "evaluation_mode": evaluated["evaluation_mode"],
+                    "reconstruction_video": video["path"] if video else None,
+                    "reconstruction_video_bytes": video["bytes"] if video else None,
+                    "status": evaluated["status"], **aggregate,
+                })
+                progress.update(message="{} bistar_tracked_window {}".format(row["sequence_id"], target))
     progress.close()
     write_csv(frame_rows, output / "frame_results.csv"); write_csv(sequence_rows, output / "sequence_results.csv")
     write_csv(gop_rows, output / "gop_results.csv")

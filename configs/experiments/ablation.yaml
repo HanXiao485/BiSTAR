@@ -9,8 +9,9 @@ dataset:
   split: test
 ablation:
   budget_mode: visible_patch_count
-  transports: [jpeg_patch, h264_atlas]
+  transports: [jpeg_patch, h264_atlas, tracked_window]
   visible_patch_counts: [20, 40, 60]
+  window_sizes: [64, 96, 128]
   variants:
     - random
     - gaze_only
@@ -24,3 +25,7 @@ bistar:
   config: configs/codecs/bistar.yaml
 bistar_atlas:
   config: configs/codecs/bistar_atlas.yaml
+bistar_tracked_window:
+  config: configs/codecs/bistar_tracked_window.yaml
+tracked_window:
+  missing_focus_policy: frame_center

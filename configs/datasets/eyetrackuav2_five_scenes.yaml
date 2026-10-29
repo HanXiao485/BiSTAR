@@ -1,0 +1,10 @@
+dataset:
+  name: eyetrackuav2_five_scenes
+  manifest: datasets/manifests/eyetrackuav2_five_scenes.csv
+  preprocessing:
+    target_width: 224
+    target_height: 224
+    target_fps: 15
+    interpolation: bilinear
+    color_space: rgb24
+  split: {train: train, val: val, test: test}

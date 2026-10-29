@@ -11,10 +11,14 @@ matched_bitrate:
   target_kbps: [100]
   tolerance_percent: 5.0
   max_iterations: 8
-methods: [h264, h265, bistar_videomae, bistar_atlas]
+methods: [h264, h265, bistar_videomae, bistar_atlas, bistar_tracked_window]
 bistar:
   config: configs/codecs/bistar.yaml
   patch_budget_mode: false
   visible_patch_count: 40
 bistar_atlas:
   config: configs/codecs/bistar_atlas.yaml
+bistar_tracked_window:
+  config: configs/codecs/bistar_tracked_window.yaml
+tracked_window:
+  missing_focus_policy: frame_center

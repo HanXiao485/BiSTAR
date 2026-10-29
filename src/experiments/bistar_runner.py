@@ -7,7 +7,7 @@ from src.bistar.selector import FullSelector
 from src.bistar.transport.packetizer import Packetizer
 from src.bistar.transport.serializer import deserialize_packet
 from src.common.config import load_yaml
-from src.metrics.image_quality import create_lpips_model, frame_metrics
+from src.metrics.image_quality import frame_metrics
 
 
 def resolve_patch_budget_options(config):
@@ -79,7 +79,6 @@ def evaluate_videomae_clip(frames, encoded, model_config_path="configs/models/vi
     reconstructed = adapter.reconstruct_clip(encoded["sparse_frames"], encoded["visible_mask"])
     latency = time.perf_counter() - started
     if compute_metrics:
-        lpips_model = lpips_model or create_lpips_model("cpu")
         rows = [frame_metrics(reference, output, lpips_model) for reference, output in zip(frames, reconstructed)]
     else:
         rows = []

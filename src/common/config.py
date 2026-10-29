@@ -70,9 +70,9 @@ def dump_yaml(data: Dict[str, Any], path: Path) -> None:
 def validate_experiment_config(data: Dict[str, Any], kind: str) -> Dict[str, Any]:
     shared = {"experiment", "dataset"}
     allowed = {
-        "rd": shared | {"rd", "methods", "bistar", "quality_metrics", "metrics", "runtime", "logging", "smoke"},
-        "matched_bitrate": shared | {"matched_bitrate", "methods", "bistar", "bistar_atlas", "metrics", "runtime", "logging"},
-        "ablation": shared | {"ablation", "bistar", "bistar_atlas", "metrics", "runtime", "logging"},
+        "rd": shared | {"rd", "methods", "bistar", "tracked_window", "roi", "model", "quality_metrics", "metrics", "runtime", "logging", "smoke"},
+        "matched_bitrate": shared | {"matched_bitrate", "methods", "bistar", "bistar_atlas", "bistar_tracked_window", "tracked_window", "roi", "metrics", "runtime", "logging"},
+        "ablation": shared | {"ablation", "bistar", "bistar_atlas", "bistar_tracked_window", "tracked_window", "roi", "metrics", "runtime", "logging"},
         "realtime": {"experiment", "network", "methods", "runtime", "logging"},
         "roi_search": shared | {"roi", "search", "methods", "model", "metrics", "runtime", "logging"},
     }

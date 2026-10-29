@@ -19,4 +19,6 @@ def write_runtime_table(rows, path):
 
 
 def write_ablation_table(rows, path):
-    write_table(rows, ["selector", "visible_patch_count", "actual_bitrate_kbps", "ssim", "lpips", "roi_ssim", "roi_lpips", "temporal_error", "reconstruction_ms", "fps"], path)
+    write_table(rows, ["transport", "selector", "visible_patch_count", "window_size",
+                       "encoded_area_fraction", "actual_bitrate_kbps", "ssim", "lpips",
+                       "roi_ssim", "roi_lpips", "temporal_error", "reconstruction_ms", "fps"], path)

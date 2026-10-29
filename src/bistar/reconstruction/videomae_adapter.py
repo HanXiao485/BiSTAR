@@ -75,6 +75,47 @@ class VideoMAEAdapter:
             output[t0:t0+tubelet, y0:y0+patch_size, x0:x0+patch_size] = np.rint(patch * 255).astype(np.uint8)
         return output
 
+    def reconstruct_dynamic_clip(self, frames, visible_pixel_masks):
+        """Reconstruct a clip from receiver-visible, frame-varying pixels only."""
+        if self.model is None: self.load_model()
+        import torch
+        frames_array = np.stack(frames).astype(np.uint8)
+        pixel_visible = np.asarray(visible_pixel_masks, dtype=bool)
+        if pixel_visible.shape != frames_array.shape[:3]:
+            raise ValueError("Dynamic pixel mask must match [T,H,W] frames")
+        patch_size = int(self.config["architecture"]["patch_size"])
+        height, width = pixel_visible.shape[1:]
+        if height % patch_size or width % patch_size:
+            raise ValueError("Frame dimensions must be divisible by VideoMAE patch size")
+        patch_visible = pixel_visible.reshape(
+            len(frames_array), height // patch_size, patch_size,
+            width // patch_size, patch_size,
+        ).all(axis=(2, 4))
+        sparse = frames_array.copy(); sparse[~pixel_visible] = 0
+        clip = torch.from_numpy(self.preprocess_clip(sparse))
+        mask_array = self.mask_adapter.build_dynamic(patch_visible)
+        mask = torch.from_numpy(mask_array)[None]
+        device = next(self.model.parameters()).device
+        with torch.no_grad():
+            predictions = self.model(clip.to(device), mask.to(device)).detach().float().cpu().numpy()[0]
+        output = sparse.copy()
+        tubelet = int(self.config["architecture"]["tubelet_size"])
+        hidden_indices = np.flatnonzero(mask_array)
+        values = frames_array[pixel_visible].reshape(-1, 3).astype(np.float32) / 255.0
+        mean = values.mean(axis=0) if values.size else np.array([0.5, 0.5, 0.5])
+        std = np.maximum(values.std(axis=0), 1e-3) if values.size else np.array([0.25] * 3)
+        h_tokens, w_tokens = height // patch_size, width // patch_size
+        for prediction, token_index in zip(predictions, hidden_indices):
+            temporal, spatial = divmod(int(token_index), h_tokens * w_tokens)
+            row, col = divmod(spatial, w_tokens)
+            patch = prediction.reshape(tubelet, patch_size, patch_size, 3)
+            patch = np.clip(patch * std + mean, 0.0, 1.0)
+            t0, y0, x0 = temporal * tubelet, row * patch_size, col * patch_size
+            output[t0:t0 + tubelet, y0:y0 + patch_size, x0:x0 + patch_size] = np.rint(
+                patch * 255).astype(np.uint8)
+        output[pixel_visible] = frames_array[pixel_visible]
+        return output
+
     def reconstruct_frame(self, history_frames, current_sparse_frame, current_visible_mask):
         frames = list(history_frames) + [current_sparse_frame]
         expected = int(self.config["temporal"]["num_frames"])

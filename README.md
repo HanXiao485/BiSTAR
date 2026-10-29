@@ -537,6 +537,38 @@ selector:
 `(gop_size-1)/fps`，结果中的 `mean_latency_ms`、`p95_latency_ms` 和
 `evaluation_mode=chunked_causal_selection` 会明确记录该延迟。
 
+### 视觉焦点跟随窗口
+
+`configs/codecs/bistar_tracked_window.yaml` 定义连续移动的小窗口方法。每帧窗口中心跟随
+gaze；gaze 缺失时依次使用任务 ROI 中心和 `missing_focus_policy`。窗口位置带有死区并
+对齐到 patch 网格，减少不必要的画面跳动。一个 GOP 内的小窗口序列由 H.264/H.265
+编码，wire 数据包含 `BTWN` 头、逐帧坐标和真实视频码流：
+
+```yaml
+codec:
+  window: {width: 96, height: 96, alignment: 16, deadband_pixels: 8}
+  encoder: {codec_name: libx264, preset: fast, tune: zerolatency,
+            mode: bitrate, bitrate_kbps: 100, gop_size: 16, b_frames: 0}
+  reconstruction: {type: videomae, window_frames: 16,
+                   dynamic_mask: true, preserve_received_pixels: true}
+```
+
+接收端只使用 wire 中解码的小窗口和坐标构造逐帧 `[T,H,W]` 可见 mask。VideoMAE
+重建不可见区域后，程序将接收端实际解码的窗口像素写回最终画面。`rd_sweep.yaml`、
+`matched_bitrate.yaml` 和 `ablation.yaml` 已启用 `bistar_tracked_window`；单视频配置因
+没有 gaze 标注而使用画面中心。带逐帧标注的数据可在实验配置中增加：
+
+```yaml
+roi:
+  annotations: datasets/annotations/eyetrackuav2_task.csv
+  coordinate_space: normalized
+tracked_window:
+  missing_focus_policy: frame_center
+```
+
+RD 与等码率实验会记录 payload、坐标元数据、总线字节、窗口面积比例、焦点来源和
+重建视频。消融实验通过 `ablation.window_sizes` 比较 64、96、128 等窗口尺寸。
+
 H.264/H.265 配置位于 `configs/codecs/h264.yaml` 和 `h265.yaml`：
 
 ```yaml

@@ -7,6 +7,11 @@ from src.datasets.manifest import read_manifest
 from src.datasets.frame_reader import preprocess_video, read_rgb_frames, write_rgb_video
 from src.experiments.bistar_runner import evaluate_videomae_clip, resolve_patch_budget_options, select_budget_for_rate
 from src.experiments.atlas_runner import load_atlas_config, match_atlas_bitrate
+from src.experiments.tracked_window_runner import (
+    load_tracked_window_config,
+    match_tracked_window_bitrate,
+    resolve_experiment_focus,
+)
 from src.bistar.reconstruction.videomae_adapter import VideoMAEAdapter
 from src.common.progress import ProgressBar
 from .runner import PROJECT_ROOT, prepare_run, write_csv, write_summary
@@ -24,7 +29,9 @@ def run_matched(config_path):
     ds = load_yaml(resolve_path(config["dataset"]["config"], PROJECT_ROOT))["dataset"]
     sequences = read_manifest(resolve_path(ds["manifest"], PROJECT_ROOT), config["dataset"].get("split", "test"))
     options = config["matched_bitrate"]; results = []
-    enabled_count = 2 + int("bistar_videomae" in config.get("methods", [])) + int("bistar_atlas" in config.get("methods", []))
+    enabled_count = (2 + int("bistar_videomae" in config.get("methods", []))
+                     + int("bistar_atlas" in config.get("methods", []))
+                     + int("bistar_tracked_window" in config.get("methods", [])))
     progress = ProgressBar(len(sequences) * len(options["target_kbps"]) * enabled_count, "Matched bitrate")
     for sequence in sequences:
         raw_source = resolve_path(sequence["video_path"], PROJECT_ROOT)
@@ -143,5 +150,46 @@ def run_matched(config_path):
                     "reconstruction_video_bytes": video["bytes"] if video else None,
                 })
                 progress.update(message="{} bistar_atlas {}".format(sequence["sequence_id"], target))
+        if frames and "bistar_tracked_window" in config.get("methods", []):
+            window_config = load_tracked_window_config(resolve_path(
+                config["bistar_tracked_window"]["config"], PROJECT_ROOT))
+            model_adapter = VideoMAEAdapter(load_yaml(PROJECT_ROOT / "configs/models/videomae.yaml"))
+            model_adapter.load_model()
+            fps = float(ds["preprocessing"]["target_fps"])
+            focus_points, focus_provenance, _ = resolve_experiment_focus(
+                config, sequence["sequence_id"], frames, PROJECT_ROOT)
+            for target in options["target_kbps"]:
+                evaluated = match_tracked_window_bitrate(
+                    frames, focus_points, fps, window_config,
+                    output / "artifacts" / sequence["sequence_id"] /
+                    "bistar_tracked_window" / str(target), target,
+                    options["tolerance_percent"], options["max_iterations"], model_adapter,
+                    compute_metrics=False,
+                )
+                video = None
+                if save_videomae_videos and video_limiter.acquire():
+                    video = write_rgb_video(
+                        evaluated["reconstructed"], output / "reconstructions" /
+                        sequence["sequence_id"] / "bistar_tracked_window_{}kbps.mp4".format(target), fps)
+                actual = evaluated["actual_bitrate_kbps"]
+                window = window_config["codec"]["window"]
+                results.append({
+                    "sequence_id": sequence["sequence_id"], "method": "bistar_tracked_window",
+                    "target_kbps": target, "requested_kbps": evaluated["requested_kbps"],
+                    "actual_kbps": actual, "error_percent": (actual - target) / target * 100,
+                    "iterations": evaluated["match_iterations"], "status": evaluated["status"],
+                    "total_bytes": evaluated["total_bytes"],
+                    "payload_bytes": evaluated["payload_bytes"],
+                    "metadata_bytes": evaluated["metadata_bytes"],
+                    "window_width": window["width"], "window_height": window["height"],
+                    "focus_provenance": ",".join(focus_provenance),
+                    "mean_latency_ms": evaluated["mean_latency_ms"],
+                    "p95_latency_ms": evaluated["p95_latency_ms"],
+                    "transport": evaluated["transport"], "evaluation_mode": evaluated["evaluation_mode"],
+                    "reconstruction_video": video["path"] if video else None,
+                    "reconstruction_video_bytes": video["bytes"] if video else None,
+                })
+                progress.update(message="{} bistar_tracked_window {}".format(
+                    sequence["sequence_id"], target))
     progress.close()
     write_csv(results, output / "metrics.csv"); write_summary({"status": "complete", "results": results}, output / "summary.json"); return results

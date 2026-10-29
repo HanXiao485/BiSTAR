@@ -1,0 +1,30 @@
+experiment:
+  name: eyetrackuav2_five_scene_comparison_100kbps
+  seed: 0
+  output_dir: outputs/eyetrackuav2_five_scene_comparison_100kbps
+  save_videomae_videos: true
+  max_videomae_videos: null
+dataset:
+  config: configs/datasets/eyetrackuav2_five_scenes.yaml
+  split: test
+roi:
+  annotations: datasets/annotations/eyetrackuav2_task.csv
+  coordinate_space: normalized
+model:
+  config: configs/models/videomae_cpu.yaml
+rd:
+  target_bitrates_kbps: [100]
+  bitrate_match_tolerance_percent: 5.0
+  max_match_iterations: 8
+methods:
+  h264: {enabled: true, config: configs/codecs/h264.yaml}
+  h265: {enabled: true, config: configs/codecs/h265.yaml}
+  bistar: {enabled: true, config: configs/codecs/bistar.yaml}
+  bistar_atlas: {enabled: true, config: configs/codecs/bistar_atlas.yaml}
+  bistar_tracked_window: {enabled: true, config: configs/codecs/bistar_tracked_window.yaml}
+bistar:
+  patch_budget_mode: false
+  visible_patch_count: 40
+tracked_window:
+  missing_focus_policy: frame_center
+quality_metrics: [psnr, ssim, ms_ssim]

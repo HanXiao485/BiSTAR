@@ -1,0 +1,25 @@
+codec:
+  name: bistar_tracked_window
+  implementation: focus_tracked_window_video
+  window:
+    width: 96
+    height: 96
+    alignment: 16
+    deadband_pixels: 8
+    focus_source: gaze
+    missing_focus_policy: frame_center
+  encoder:
+    codec_name: libx264
+    preset: fast
+    tune: zerolatency
+    mode: bitrate
+    bitrate_kbps: 100
+    crf: 22
+    pixel_format: yuv420p
+    gop_size: 16
+    b_frames: 0
+  reconstruction:
+    type: videomae
+    window_frames: 16
+    dynamic_mask: true
+    preserve_received_pixels: true
