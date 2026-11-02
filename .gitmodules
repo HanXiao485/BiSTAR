@@ -1,3 +1,3 @@
 [submodule "third_party/VideoMAE"]
 	path = third_party/VideoMAE
-	url = https://github.com/MCG-NJU/VideoMAE.git
+	url = https://github.com/HanXiao485/VideoMAE.git

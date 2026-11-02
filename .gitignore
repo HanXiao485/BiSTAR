@@ -3,7 +3,8 @@
 .pytest_cache/
 .venv/
 .conda/
-/datasets/
+**/datasets/
+**/models/
 /outputs/
 /tests/
 /checkpoints/
