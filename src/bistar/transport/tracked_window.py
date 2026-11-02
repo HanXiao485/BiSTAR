@@ -23,8 +23,9 @@ def _aligned_origin(center, size, limit, alignment):
 
 
 def track_window_positions(focus_points, frame_width, frame_height, window_width,
-                           window_height, alignment=2, deadband_pixels=8):
-    """Track focus points with a deadband while keeping each point in the window."""
+                           window_height, alignment=2, deadband_pixels=8,
+                           tracking_mode="center_follow"):
+    """Center the window on every focus point, with an opt-in legacy deadband."""
     if not (0 < window_width <= frame_width and 0 < window_height <= frame_height):
         raise ValueError("Tracked window must fit inside the source frame")
     positions = []
@@ -33,9 +34,14 @@ def track_window_positions(focus_points, frame_width, frame_height, window_width
         cx, cy = float(point[0]), float(point[1])
         target = (_aligned_origin(cx, window_width, frame_width, alignment),
                   _aligned_origin(cy, window_height, frame_height, alignment))
-        if previous is None:
+        if tracking_mode == "center_follow":
             current = target
-        else:
+        elif tracking_mode == "edge_trigger":
+            if previous is None:
+                current = target
+                positions.append(current)
+                previous = current
+                continue
             x, y = previous
             left = x + deadband_pixels
             right = x + window_width - deadband_pixels
@@ -46,6 +52,9 @@ def track_window_positions(focus_points, frame_width, frame_height, window_width
             if cy < top or cy >= bottom:
                 y = target[1]
             current = (x, y)
+        else:
+            raise ValueError("Unknown tracked-window tracking mode: {}".format(
+                tracking_mode))
         positions.append(current)
         previous = current
     return positions
@@ -100,6 +109,7 @@ def encode_tracked_window_gop(frames, focus_points, fps, config, output_dir,
     positions = track_window_positions(
         focus_points, width, height, window_width, window_height,
         int(window.get("alignment", 2)), int(window.get("deadband_pixels", 8)),
+        str(window.get("tracking_mode", "center_follow")),
     )
     crops = [frame[y:y + window_height, x:x + window_width].copy()
              for frame, (x, y) in zip(frames, positions)]

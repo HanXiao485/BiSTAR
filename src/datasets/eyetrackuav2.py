@@ -128,8 +128,8 @@ def read_video_map(path, project_root):
             video_id = row["video_id"].strip()
             if not video_id or video_id in result:
                 raise ValueError("Empty or duplicate video_id in video map: {}".format(video_id))
-            if row["split"] not in ("val", "test"):
-                raise ValueError("EyeTrackUAV2 video split must be val or test: {}".format(video_id))
+            if row["split"] not in ("train", "val", "test"):
+                raise ValueError("EyeTrackUAV2 video split must be train, val or test: {}".format(video_id))
             raw_path = row["video_path"].strip()
             video_path = Path(raw_path) if raw_path else None
             if video_path is not None and not video_path.is_absolute():
@@ -141,7 +141,7 @@ def read_video_map(path, project_root):
         group_splits.setdefault(group, set()).add(row["split"])
     leaked = sorted(group for group, splits in group_splits.items() if len(splits) > 1)
     if leaked:
-        raise ValueError("source_group spans val/test splits: {}".format(leaked))
+        raise ValueError("source_group spans train/val/test splits: {}".format(leaked))
     return result
 
 
@@ -159,8 +159,15 @@ def make_video_map_template(video_ids, output):
             group = re.sub(r"_crop\d+$", "", video_id) if video_id.startswith("VIRAT_") else video_id
             if group not in groups:
                 groups.append(group)
-        group_splits = {group: ("val" if index % 5 == 0 else "test")
-                        for index, group in enumerate(groups)}
+        ordered = sorted(groups, key=lambda group: hashlib.sha256(
+            "0:{}".format(group).encode()).digest())
+        train_count = max(1, int(round(len(ordered) * 0.70)))
+        val_count = max(1, int(round(len(ordered) * 0.15)))
+        group_splits = {
+            group: ("train" if index < train_count else
+                    "val" if index < train_count + val_count else "test")
+            for index, group in enumerate(ordered)
+        }
         for video_id in video_ids:
             group = re.sub(r"_crop\d+$", "", video_id) if video_id.startswith("VIRAT_") else video_id
             writer.writerow({

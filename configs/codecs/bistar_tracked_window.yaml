@@ -5,6 +5,7 @@ codec:
     width: 96
     height: 96
     alignment: 16
+    tracking_mode: center_follow
     deadband_pixels: 8
     focus_source: gaze
     missing_focus_policy: frame_center
