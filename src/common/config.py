@@ -32,10 +32,18 @@ def load_codec_config(path: Path) -> Dict[str, Any]:
     require(codec, "name", "implementation", "pixel_format", "encoder", "output")
     require(codec["encoder"], "codec_name", "preset", "mode", "gop_size", "b_frames")
     require(codec["output"], "container", "extension")
-    allowed = {"name", "implementation", "pixel_format", "encoder", "output"}
+    allowed = {"name", "implementation", "pixel_format", "encoder", "output", "backend", "qp_control"}
     unknown = set(codec) - allowed
     if unknown:
         raise ConfigError("Unknown critical codec fields: {}".format(sorted(unknown)))
+    if codec["name"] == "h264_block_qp":
+        require(codec, "qp_control")
+        qp = codec["qp_control"]
+        require(qp, "provider", "mode", "block_size", "delta_limits")
+        if qp["provider"] not in ("uniform", "fixed_roi", "external_map"):
+            raise ConfigError("Unknown h264_block_qp provider: {}".format(qp["provider"]))
+        if qp["mode"] != "delta" or int(qp["block_size"]) != 16:
+            raise ConfigError("h264_block_qp supports delta mode and block_size 16 only")
     return data
 
 
@@ -71,7 +79,7 @@ def validate_experiment_config(data: Dict[str, Any], kind: str) -> Dict[str, Any
     shared = {"experiment", "dataset"}
     allowed = {
         "rd": shared | {"rd", "methods", "bistar", "tracked_window", "roi", "model", "quality_metrics", "metrics", "runtime", "logging", "smoke"},
-        "matched_bitrate": shared | {"matched_bitrate", "methods", "bistar", "bistar_atlas", "bistar_tracked_window", "tracked_window", "roi", "metrics", "runtime", "logging"},
+        "matched_bitrate": shared | {"matched_bitrate", "methods", "h264_block_qp", "bistar", "bistar_atlas", "bistar_tracked_window", "tracked_window", "roi", "metrics", "runtime", "logging"},
         "ablation": shared | {"ablation", "bistar", "bistar_atlas", "bistar_tracked_window", "tracked_window", "roi", "metrics", "runtime", "logging"},
         "realtime": {"experiment", "network", "methods", "runtime", "logging"},
         "roi_search": shared | {"roi", "search", "methods", "model", "metrics", "runtime", "logging"},

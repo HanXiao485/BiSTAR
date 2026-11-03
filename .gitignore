@@ -6,6 +6,7 @@
 **/datasets/
 **/models/
 /outputs/
+/build/
 /tests/
 /checkpoints/
 third_party/VideoMAE/*

@@ -4,7 +4,7 @@ import itertools
 import json
 
 
-METHODS = ("h264", "h265", "bistar", "bistar_atlas")
+METHODS = ("h264", "h264_block_qp", "h265", "bistar", "bistar_atlas")
 OBJECTIVES = {"roi_ssim": True, "roi_psnr": True, "critical_patch_retention": True,
               "roi_normalized_l1": False}
 

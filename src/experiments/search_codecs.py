@@ -10,7 +10,7 @@ from src.bistar.transport.atlas import decode_atlas_gop, encode_atlas_gop
 from src.bistar.transport.packetizer import Packetizer
 from src.bistar.transport.patch_budget import PatchBudgetController
 from src.bistar.transport.serializer import deserialize_packet
-from src.codecs import H264Adapter, H265Adapter
+from src.codecs import H264Adapter, H264BlockQPAdapter, H265Adapter
 from src.datasets.frame_reader import read_rgb_frames
 from src.experiments.atlas_runner import SELECTORS
 from src.experiments.runner import write_csv
@@ -180,8 +180,9 @@ def evaluate_candidate(frames, source, fps, preprocessing, candidate, output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
     method = candidate["method"]
     trials = []
-    if method in ("h264", "h265"):
-        adapter = (H264Adapter if method == "h264" else H265Adapter)()
+    if method in ("h264", "h264_block_qp", "h265"):
+        adapters = {"h264": H264Adapter, "h264_block_qp": H264BlockQPAdapter, "h265": H265Adapter}
+        adapter = adapters[method]()
         requested = float(target)
         best = None
         for iteration in range(1, int(options["max_match_iterations"]) + 1):

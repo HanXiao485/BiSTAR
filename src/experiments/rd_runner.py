@@ -3,7 +3,7 @@ from pathlib import Path
 
 import numpy as np
 
-from src.codecs import H264Adapter, H265Adapter
+from src.codecs import H264Adapter, H264BlockQPAdapter, H265Adapter
 from src.common.config import load_bistar_config, load_codec_config, load_yaml, resolve_path, validate_experiment_config
 from src.datasets.frame_reader import preprocess_video, read_rgb_frames, write_rgb_video
 from src.datasets.manifest import read_manifest
@@ -22,7 +22,7 @@ from .runner import PROJECT_ROOT, prepare_run, write_csv, write_summary
 from .video_budget import VideoSaveLimiter
 
 
-ADAPTERS = {"h264": H264Adapter, "h265": H265Adapter}
+ADAPTERS = {"h264": H264Adapter, "h264_block_qp": H264BlockQPAdapter, "h265": H265Adapter}
 
 
 def _aggregate(rows, keys):
@@ -44,7 +44,7 @@ def run_rd(config_path):
     lpips_model = create_lpips_model("cpu") if "lpips" in config.get("quality_metrics", ["lpips"]) else None
     rates = config["rd"]["target_bitrates_kbps"]
     method_count = sum(bool(config["methods"].get(name, {}).get("enabled", False))
-                       for name in ("h264", "h265", "bistar", "bistar_atlas",
+                       for name in ("h264", "h264_block_qp", "h265", "bistar", "bistar_atlas",
                                     "bistar_tracked_window",
                                     "bistar_tracked_causal_rolling",
                                     "bistar_tracked_async_fast_path"))
@@ -91,6 +91,10 @@ def run_rd(config_path):
                 sequence_rows.append({"sequence_id": row["sequence_id"], "method": method, "target_kbps": target,
                                       "actual_bitrate_kbps": encoded["actual_bitrate_kbps"], "total_bytes": encoded["total_bytes"],
                                       "num_frames": len(recon), "encode_time_sec": encoded["encode_time_sec"], "decode_time_sec": decoded["decode_time_sec"], **aggregate})
+                for key in ("provider", "backend", "backend_version", "qp_map_sha256", "qp_trace_path", "frame_trace_path",
+                            "applied_block_qp_available", "roi_fallback_count", "clipped_value_count"):
+                    if key in encoded:
+                        sequence_rows[-1][key] = encoded[key]
                 sequence_rows[-1].update({"requested_kbps": requested, "match_iterations": iteration,
                                           "reconstruction_video": comparison_video["path"],
                                           "reconstruction_video_bytes": comparison_video["bytes"],

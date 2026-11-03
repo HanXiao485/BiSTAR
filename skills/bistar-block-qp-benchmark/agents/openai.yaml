@@ -1,0 +1,4 @@
+interface:
+  display_name: "BiSTAR Block-QP Benchmark"
+  short_description: "Implement and validate block-level H.264 QP control"
+  default_prompt: "Use $bistar-block-qp-benchmark to implement and validate block-level H.264 QP control in this BiSTAR checkout."

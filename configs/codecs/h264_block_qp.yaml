@@ -1,0 +1,28 @@
+codec:
+  name: h264_block_qp
+  implementation: libx264_quant_offsets_bridge
+  pixel_format: yuv420p
+  backend:
+    bridge_path: build/x264_qp_bridge
+  encoder:
+    codec_name: libx264
+    preset: medium
+    mode: bitrate
+    bitrate_kbps: 100
+    maxrate_kbps: null
+    bufsize_kbps: null
+    crf: null
+    gop_size: 30
+    b_frames: 0
+    tune: zerolatency
+  qp_control:
+    provider: uniform
+    mode: delta
+    block_size: 16
+    delta: 0.0
+    delta_limits: [-12.0, 12.0]
+    mixed_block_policy: any_overlap
+    missing_roi_policy: uniform
+    trace_requested: true
+    trace_applied: false
+  output: {container: h264, extension: h264}

@@ -1,7 +1,7 @@
 import copy
 from pathlib import Path
 
-from src.codecs import H264Adapter, H265Adapter
+from src.codecs import H264Adapter, H264BlockQPAdapter, H265Adapter
 from src.common.config import load_bistar_config, load_codec_config, load_yaml, resolve_path, validate_experiment_config
 from src.datasets.manifest import read_manifest
 from src.datasets.frame_reader import preprocess_video, read_rgb_frames, write_rgb_video
@@ -29,7 +29,8 @@ def run_matched(config_path):
     ds = load_yaml(resolve_path(config["dataset"]["config"], PROJECT_ROOT))["dataset"]
     sequences = read_manifest(resolve_path(ds["manifest"], PROJECT_ROOT), config["dataset"].get("split", "test"))
     options = config["matched_bitrate"]; results = []
-    enabled_count = (2 + int("bistar_videomae" in config.get("methods", []))
+    enabled_count = (2 + int("h264_block_qp" in config.get("methods", []))
+                     + int("bistar_videomae" in config.get("methods", []))
                      + int("bistar_atlas" in config.get("methods", []))
                      + int("bistar_tracked_window" in config.get("methods", [])))
     progress = ProgressBar(len(sequences) * len(options["target_kbps"]) * enabled_count, "Matched bitrate")
@@ -37,8 +38,13 @@ def run_matched(config_path):
         raw_source = resolve_path(sequence["video_path"], PROJECT_ROOT)
         common = preprocess_video(raw_source, output / "sources" / (sequence["sequence_id"] + ".mkv"), ds["preprocessing"])
         source = Path(common["path"])
-        for method, cls in (("h264", H264Adapter), ("h265", H265Adapter)):
-            cfg = load_codec_config(PROJECT_ROOT / "configs/codecs/{}.yaml".format(method)); cfg["preprocessing"] = ds["preprocessing"]
+        codec_methods = [("h264", H264Adapter), ("h265", H265Adapter)]
+        if "h264_block_qp" in config.get("methods", []):
+            codec_methods.append(("h264_block_qp", H264BlockQPAdapter))
+        for method, cls in codec_methods:
+            method_section = config.get(method, {})
+            config_path = method_section.get("config", "configs/codecs/{}.yaml".format(method))
+            cfg = load_codec_config(resolve_path(config_path, PROJECT_ROOT)); cfg["preprocessing"] = ds["preprocessing"]
             for target in options["target_kbps"]:
                 requested = float(target); actual = 0.0
                 for iteration in range(1, options["max_iterations"] + 1):
@@ -63,6 +69,10 @@ def run_matched(config_path):
                                 "requested_kbps": requested, "actual_kbps": actual, "error_percent": (actual-target)/target*100,
                                 "iterations": iteration, "status": "matched" if abs(actual-target)/target*100 <= options["tolerance_percent"] else "bitrate_unreachable",
                                 "reconstruction_video": video["path"], "reconstruction_video_bytes": video["bytes"]})
+                for key in ("provider", "backend", "backend_version", "qp_map_sha256", "qp_trace_path", "frame_trace_path",
+                            "applied_block_qp_available", "roi_fallback_count", "clipped_value_count"):
+                    if key in encoded:
+                        results[-1][key] = encoded[key]
                 progress.update(message="{} {} {}".format(sequence["sequence_id"], method, target))
         frames = read_rgb_frames(source)
         clip_size = 16
