@@ -5,6 +5,10 @@ from pathlib import Path
 import numpy as np
 
 from src.bistar.reconstruction.videomae_adapter import VideoMAEAdapter
+from src.bistar.reconstruction.tracked_window_realtime import (
+    reconstruct_async_fast_path,
+    reconstruct_causal_rolling,
+)
 from src.bistar.transport.tracked_window import (
     decode_tracked_window_gop,
     encode_tracked_window_gop,
@@ -27,7 +31,83 @@ def load_tracked_window_config(path):
         raise ValueError("Tracked-window reconstruction must be videomae")
     if int(codec["encoder"].get("b_frames", 0)) != 0:
         raise ValueError("Tracked-window real-time encoder requires b_frames=0")
+    mode = codec["reconstruction"].get("mode", "clip")
+    if mode not in ("clip", "causal_rolling", "async_fast_path"):
+        raise ValueError("Unknown tracked-window reconstruction mode: {}".format(mode))
+    if mode == "async_fast_path" and int(codec["reconstruction"].get(
+            "inference_stride", 2)) < 1:
+        raise ValueError("Async inference_stride must be positive")
     return config
+
+
+def _evaluate_realtime_sequence(frames, focus_points, fps, codec, output_dir,
+                                model_adapter, lpips_model, compute_metrics,
+                                sequence_number):
+    """Receiver-closed causal reconstruction over a continuous sequence."""
+    clip_size = int(codec["reconstruction"].get("window_frames", 16))
+    sparse_frames, visible_masks, gop_rows = [], [], []
+    payload_bytes = metadata_bytes = total_bytes = 0
+    transport_seconds = 0.0
+    selection_hits = np.zeros(frames[0].shape[:2], dtype=np.float64)
+    for gop_id, start in enumerate(range(0, len(frames), clip_size)):
+        valid = frames[start:start + clip_size]
+        began = time.perf_counter()
+        sent = encode_tracked_window_gop(
+            valid, focus_points[start:start + len(valid)], fps, codec,
+            Path(output_dir) / "bitstreams", sequence_id=sequence_number,
+            gop_id=gop_id, start_frame_id=start,
+            timestamp_ns=int(start / fps * 1e9))
+        received = decode_tracked_window_gop(sent["wire"])
+        elapsed = time.perf_counter() - began
+        if received["total_bytes"] != sent["total_bytes"]:
+            raise RuntimeError("Tracked-window sender and receiver accounting differ")
+        sparse_frames.extend(received["sparse_frames"])
+        visible_masks.extend(list(received["visible_pixel_masks"]))
+        payload_bytes += received["payload_bytes"]
+        metadata_bytes += received["metadata_bytes"]
+        total_bytes += received["total_bytes"]
+        transport_seconds += elapsed
+        selection_hits += received["visible_pixel_masks"].sum(axis=0)
+        gop_rows.append({
+            "gop_id": gop_id, "start_frame_id": start, "valid_frames": len(valid),
+            "payload_bytes": received["payload_bytes"],
+            "metadata_bytes": received["metadata_bytes"],
+            "total_bytes": received["total_bytes"],
+            "window_width": int(codec["window"]["width"]),
+            "window_height": int(codec["window"]["height"]),
+            "processing_ms": elapsed * 1000.0,
+            "tail_transport_policy": "valid_frames_only",
+        })
+    mode = codec["reconstruction"]["mode"]
+    history = int(codec["reconstruction"].get("window_frames", 16))
+    if mode == "causal_rolling":
+        reconstructed, runtime = reconstruct_causal_rolling(
+            model_adapter, sparse_frames, visible_masks, history)
+    else:
+        reconstructed, runtime = reconstruct_async_fast_path(
+            model_adapter, sparse_frames, visible_masks, fps, history,
+            int(codec["reconstruction"].get("inference_stride", 2)))
+    metric_rows = []
+    if compute_metrics:
+        metric_rows = [frame_metrics(reference, output, lpips_model)
+                       for reference, output in zip(frames, reconstructed)]
+    codec_ms = transport_seconds * 1000.0 / len(frames)
+    critical_ms = codec_ms + runtime["critical_path_model_latency_ms"]
+    p95_critical_ms = codec_ms + (runtime["p95_model_latency_ms"]
+                                  if mode == "causal_rolling" else 0.0)
+    return {
+        "reconstructed": reconstructed, "frame_metrics": metric_rows,
+        "gop_results": gop_rows, "payload_bytes": payload_bytes,
+        "metadata_bytes": metadata_bytes, "total_bytes": total_bytes,
+        "actual_bitrate_kbps": total_bytes * 8.0 / (len(frames) / fps) / 1000.0,
+        "mean_latency_ms": critical_ms, "p95_latency_ms": p95_critical_ms,
+        "codec_compute_ms_per_frame": codec_ms,
+        "selection_frequency_pixels": selection_hits / len(frames),
+        "transport": "tracked_window_video",
+        "evaluation_mode": "receiver_closed_{}".format(mode),
+        "history_frames": history, "future_frames_used": False,
+        **runtime,
+    }
 
 
 def focus_points_from_annotations(frame_count, width, height, gaze_points=None,
@@ -85,6 +165,11 @@ def evaluate_tracked_window_sequence(frames, focus_points, fps, window_config, o
         model_adapter = model_adapter or VideoMAEAdapter(load_yaml("configs/models/videomae.yaml"))
         if model_adapter.model is None:
             model_adapter.load_model()
+    mode = codec["reconstruction"].get("mode", "clip")
+    if reconstruct and mode in ("causal_rolling", "async_fast_path"):
+        return _evaluate_realtime_sequence(
+            frames, focus_points, fps, codec, output_dir, model_adapter,
+            lpips_model, compute_metrics, sequence_number)
     reconstructed_frames, metric_rows, gop_rows = [], [], []
     total_bytes = payload_bytes = metadata_bytes = 0
     latencies = []

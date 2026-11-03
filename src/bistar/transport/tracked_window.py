@@ -111,6 +111,11 @@ def encode_tracked_window_gop(frames, focus_points, fps, config, output_dir,
         int(window.get("alignment", 2)), int(window.get("deadband_pixels", 8)),
         str(window.get("tracking_mode", "center_follow")),
     )
+    update_interval = int(window.get("update_interval", 1))
+    if update_interval < 1:
+        raise ValueError("Tracked-window update_interval must be positive")
+    positions = [positions[(index // update_interval) * update_interval]
+                 for index in range(len(positions))]
     crops = [frame[y:y + window_height, x:x + window_width].copy()
              for frame, (x, y) in zip(frames, positions)]
     output_dir = Path(output_dir); output_dir.mkdir(parents=True, exist_ok=True)

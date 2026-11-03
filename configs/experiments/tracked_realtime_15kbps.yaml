@@ -1,0 +1,30 @@
+experiment:
+  name: tracked_realtime_15kbps
+  seed: 0
+  output_dir: outputs/tracked_realtime_15kbps
+  save_videomae_videos: true
+  max_videomae_videos: 3
+dataset:
+  config: configs/datasets/eyetrackuav2.yaml
+  split: test
+rd:
+  target_bitrates_kbps: [15]
+  bitrate_match_tolerance_percent: 5.0
+  max_match_iterations: 8
+methods:
+  h264: {enabled: true, config: configs/codecs/h264.yaml}
+  h265: {enabled: true, config: configs/codecs/h265.yaml}
+  bistar_tracked_causal_rolling:
+    enabled: true
+    config: configs/codecs/bistar_tracked_causal_rolling.yaml
+  bistar_tracked_async_fast_path:
+    enabled: true
+    config: configs/codecs/bistar_tracked_async_fast_path.yaml
+tracked_window:
+  missing_focus_policy: frame_center
+roi:
+  annotations: datasets/annotations/eyetrackuav2_task.csv
+  coordinate_space: normalized
+model:
+  config: configs/models/videomae.yaml
+quality_metrics: [psnr, ssim, ms_ssim, lpips]

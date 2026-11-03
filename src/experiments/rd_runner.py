@@ -44,7 +44,10 @@ def run_rd(config_path):
     lpips_model = create_lpips_model("cpu") if "lpips" in config.get("quality_metrics", ["lpips"]) else None
     rates = config["rd"]["target_bitrates_kbps"]
     method_count = sum(bool(config["methods"].get(name, {}).get("enabled", False))
-                       for name in ("h264", "h265", "bistar", "bistar_atlas", "bistar_tracked_window"))
+                       for name in ("h264", "h265", "bistar", "bistar_atlas",
+                                    "bistar_tracked_window",
+                                    "bistar_tracked_causal_rolling",
+                                    "bistar_tracked_async_fast_path"))
     progress = ProgressBar(len(rows) * len(rates) * max(1, method_count), "RD sweep")
     for row in rows:
         raw_source = resolve_path(row["video_path"], PROJECT_ROOT)
@@ -220,8 +223,12 @@ def run_rd(config_path):
                     **aggregate,
                 })
                 progress.update(message="{} bistar_atlas {}".format(row["sequence_id"], target))
-        window_method = config["methods"].get("bistar_tracked_window", {})
-        if window_method.get("enabled", False):
+        for window_method_name in (
+                "bistar_tracked_window", "bistar_tracked_causal_rolling",
+                "bistar_tracked_async_fast_path"):
+            window_method = config["methods"].get(window_method_name, {})
+            if not window_method.get("enabled", False):
+                continue
             window_config = load_tracked_window_config(
                 resolve_path(window_method["config"], PROJECT_ROOT))
             model_adapter = VideoMAEAdapter(load_yaml(model_config_path))
@@ -232,7 +239,7 @@ def run_rd(config_path):
             for target in rates:
                 evaluated = match_tracked_window_bitrate(
                     originals, focus_points, fps, window_config,
-                    output / "artifacts" / row["sequence_id"] / "bistar_tracked_window" / str(target),
+                    output / "artifacts" / row["sequence_id"] / window_method_name / str(target),
                     target, config["rd"]["bitrate_match_tolerance_percent"],
                     config["rd"].get("max_match_iterations", 8), model_adapter,
                     lpips_model=lpips_model, compute_metrics=True,
@@ -241,7 +248,7 @@ def run_rd(config_path):
                 spatial = PatchQualityAccumulator(
                     originals[0].shape[0], originals[0].shape[1], spatial_patch_size)
                 for frame_id, metrics in enumerate(evaluated["frame_metrics"]):
-                    item = {"sequence_id": row["sequence_id"], "method": "bistar_tracked_window",
+                    item = {"sequence_id": row["sequence_id"], "method": window_method_name,
                             "target_kbps": target, "frame_id": frame_id, **metrics}
                     frame_rows.append(item); current.append(item)
                     spatial.update(originals[frame_id], evaluated["reconstructed"][frame_id])
@@ -249,20 +256,20 @@ def run_rd(config_path):
                     spatial.rows, spatial_patch_size, spatial.columns, spatial_patch_size
                 ).mean(axis=(1, 3))
                 patch_rows.extend(spatial.rows_for(
-                    {"sequence_id": row["sequence_id"], "method": "bistar_tracked_window",
+                    {"sequence_id": row["sequence_id"], "method": window_method_name,
                      "target_kbps": target}, selection_frequency=frequency))
                 for gop in evaluated["gop_results"]:
                     gop_rows.append({"sequence_id": row["sequence_id"],
-                                     "method": "bistar_tracked_window", "target_kbps": target, **gop})
+                                     "method": window_method_name, "target_kbps": target, **gop})
                 video = None
                 if save_videomae_videos and video_limiter.acquire():
                     video = write_rgb_video(
                         evaluated["reconstructed"], output / "reconstructions" / row["sequence_id"] /
-                        "bistar_tracked_window_{}kbps.mp4".format(target), fps)
+                        "{}_{}kbps.mp4".format(window_method_name, target), fps)
                 window = window_config["codec"]["window"]
                 aggregate = _aggregate(current, ["psnr", "ssim", "ms_ssim", "lpips"])
                 sequence_rows.append({
-                    "sequence_id": row["sequence_id"], "method": "bistar_tracked_window",
+                    "sequence_id": row["sequence_id"], "method": window_method_name,
                     "target_kbps": target, "actual_bitrate_kbps": evaluated["actual_bitrate_kbps"],
                     "requested_kbps": evaluated["requested_kbps"],
                     "match_iterations": evaluated["match_iterations"],
@@ -270,6 +277,13 @@ def run_rd(config_path):
                     "metadata_bytes": evaluated["metadata_bytes"], "num_frames": len(originals),
                     "mean_latency_ms": evaluated["mean_latency_ms"],
                     "p95_latency_ms": evaluated["p95_latency_ms"],
+                    "model_latency_ms": evaluated.get("model_latency_ms"),
+                    "critical_path_model_latency_ms": evaluated.get(
+                        "critical_path_model_latency_ms"),
+                    "mean_background_age_frames": evaluated.get(
+                        "mean_background_age_frames"),
+                    "dropped_jobs": evaluated.get("dropped_jobs"),
+                    "future_frames_used": evaluated.get("future_frames_used", False),
                     "window_width": window["width"], "window_height": window["height"],
                     "encoded_area_fraction": window["width"] * window["height"] /
                     (originals[0].shape[0] * originals[0].shape[1]),
@@ -279,7 +293,8 @@ def run_rd(config_path):
                     "reconstruction_video_bytes": video["bytes"] if video else None,
                     "status": evaluated["status"], **aggregate,
                 })
-                progress.update(message="{} bistar_tracked_window {}".format(row["sequence_id"], target))
+                progress.update(message="{} {} {}".format(
+                    row["sequence_id"], window_method_name, target))
     progress.close()
     write_csv(frame_rows, output / "frame_results.csv"); write_csv(sequence_rows, output / "sequence_results.csv")
     write_csv(gop_rows, output / "gop_results.csv")

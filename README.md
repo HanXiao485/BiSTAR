@@ -566,6 +566,38 @@ tracked_window:
   missing_focus_policy: frame_center
 ```
 
+完整的 15 kbps 四方法配置位于
+`configs/experiments/tracked_realtime_15kbps.yaml`，运行命令为：
+
+```bash
+python scripts/run_rd.py --config configs/experiments/tracked_realtime_15kbps.yaml
+```
+
+实时重建还提供两个独立方法：
+
+- `bistar_tracked_causal_rolling`：仅用当前帧及最多 15 帧历史逐帧重建，显示等待
+  VideoMAE 输出；配置为 `configs/codecs/bistar_tracked_causal_rolling.yaml`。
+- `bistar_tracked_async_fast_path`：当前接收 ROI 立即显示，VideoMAE 每 2 帧异步恢复
+  背景，单工作线程队列采用 `keep_latest`；配置为
+  `configs/codecs/bistar_tracked_async_fast_path.yaml`。
+
+两份默认配置对应 15 kbps 校准实验的最优几何参数：单个 48×48 窗口、16 帧历史、
+窗口位置每 2 帧更新。方法名中的 `causal` 表示不读取未来帧。可在 RD 配置中独立启用：
+
+```yaml
+rd:
+  target_bitrates_kbps: [15]
+methods:
+  bistar_tracked_causal_rolling:
+    enabled: true
+    config: configs/codecs/bistar_tracked_causal_rolling.yaml
+  bistar_tracked_async_fast_path:
+    enabled: true
+    config: configs/codecs/bistar_tracked_async_fast_path.yaml
+tracked_window:
+  missing_focus_policy: frame_center
+```
+
 RD 与等码率实验会记录 payload、坐标元数据、总线字节、窗口面积比例、焦点来源和
 重建视频。消融实验通过 `ablation.window_sizes` 比较 64、96、128 等窗口尺寸。
 
